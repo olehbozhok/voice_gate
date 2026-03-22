@@ -170,7 +170,8 @@ impl Processor {
         let matched_profile = ver_result.as_ref().and_then(|r| r.matched_profile.clone());
         // Track how long similarity has been available.
         if self.verifier.has_verified() {
-            self.similarity_available_ms = self.similarity_available_ms.saturating_add(self.frame_ms);
+            self.similarity_available_ms =
+                self.similarity_available_ms.saturating_add(self.frame_ms);
         }
         let cfg = self.config.read();
         let gate_input = GateInput {

@@ -181,7 +181,10 @@ impl VoiceGateApp {
         if let Some(ref progress) = self.download_progress {
             let p = progress.lock().unwrap();
             self.model_status = p.status.clone();
-            if matches!(self.model_status, ModelStatus::DownloadComplete | ModelStatus::Error(_)) {
+            if matches!(
+                self.model_status,
+                ModelStatus::DownloadComplete | ModelStatus::Error(_)
+            ) {
                 drop(p);
                 self.download_progress = None;
                 if matches!(self.model_status, ModelStatus::DownloadComplete) {

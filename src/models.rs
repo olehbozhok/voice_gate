@@ -107,12 +107,13 @@ pub fn ecapa_tdnn_path(models_dir: &Path) -> PathBuf {
 ///
 /// Updates `progress` after each chunk so the UI can display a progress bar.
 /// Runs synchronously — call from a background thread.
-pub fn download_models(
-    models_dir: &Path,
-    progress: Arc<Mutex<DownloadProgress>>,
-) -> Result<()> {
-    std::fs::create_dir_all(models_dir)
-        .with_context(|| format!("failed to create models directory: {}", models_dir.display()))?;
+pub fn download_models(models_dir: &Path, progress: Arc<Mutex<DownloadProgress>>) -> Result<()> {
+    std::fs::create_dir_all(models_dir).with_context(|| {
+        format!(
+            "failed to create models directory: {}",
+            models_dir.display()
+        )
+    })?;
 
     for model in REQUIRED_MODELS {
         let dest = models_dir.join(model.filename);
@@ -148,7 +149,8 @@ fn download_file(
 ) -> Result<()> {
     log::info!("Downloading {} from {}", description, url);
 
-    let response = ureq::get(url).call()
+    let response = ureq::get(url)
+        .call()
         .with_context(|| format!("HTTP request failed for {}", url))?;
 
     let total_size: Option<u64> = response
@@ -167,7 +169,8 @@ fn download_file(
     let mut reader = body.as_reader();
 
     loop {
-        let n = reader.read(&mut buf)
+        let n = reader
+            .read(&mut buf)
             .context("error reading download stream")?;
         if n == 0 {
             break;
@@ -188,8 +191,13 @@ fn download_file(
     drop(file);
 
     // Atomic rename: tmp → final.
-    std::fs::rename(&tmp_dest, dest)
-        .with_context(|| format!("failed to rename {} → {}", tmp_dest.display(), dest.display()))?;
+    std::fs::rename(&tmp_dest, dest).with_context(|| {
+        format!(
+            "failed to rename {} → {}",
+            tmp_dest.display(),
+            dest.display()
+        )
+    })?;
 
     log::info!("Downloaded {} ({} bytes)", description, downloaded);
     Ok(())

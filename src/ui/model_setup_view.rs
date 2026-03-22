@@ -38,10 +38,7 @@ pub fn show(
                             .color(egui::Color32::from_rgb(220, 60, 60)),
                     );
                     ui.label(&m.description);
-                    ui.label(
-                        egui::RichText::new(format!("({})", m.filename))
-                            .weak(),
-                    );
+                    ui.label(egui::RichText::new(format!("({})", m.filename)).weak());
                 });
             }
 
@@ -87,10 +84,7 @@ pub fn show(
             ui.add(bar);
 
             ui.add_space(4.0);
-            ui.label(
-                egui::RichText::new("Please wait, this may take a minute...")
-                    .weak(),
-            );
+            ui.label(egui::RichText::new("Please wait, this may take a minute...").weak());
         }
 
         ModelStatus::DownloadComplete => {

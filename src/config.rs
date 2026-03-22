@@ -329,7 +329,6 @@ pub struct GateConfig {
     pub mode: GateMode,
 }
 
-
 impl Default for Config {
     fn default() -> Self {
         Self {

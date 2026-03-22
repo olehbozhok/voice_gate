@@ -147,14 +147,11 @@ pub fn show(
 
                 ui.label("Profile:");
                 if let Some(name) = &t.matched_profile {
-                    ui.label(
-                        RichText::new(name)
-                            .color(if sim_above {
-                                Color32::from_rgb(50, 205, 50)
-                            } else {
-                                Color32::from_rgb(230, 160, 60)
-                            }),
-                    );
+                    ui.label(RichText::new(name).color(if sim_above {
+                        Color32::from_rgb(50, 205, 50)
+                    } else {
+                        Color32::from_rgb(230, 160, 60)
+                    }));
                 } else {
                     ui.label(RichText::new("—").color(Color32::from_rgb(180, 180, 180)));
                 }
