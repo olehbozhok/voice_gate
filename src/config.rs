@@ -34,14 +34,58 @@ pub struct SpeakerConfig {
 }
 
 /// How the gate decides when to open relative to speaker verification.
+///
+/// Each mode implements [`GateMode::pre_verification_decision`] which determines
+/// what happens when speech is detected but the speaker hasn't been verified yet
+/// (not enough audio accumulated, or verification is still running).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum GateMode {
-    /// Open immediately on speech, close if verification fails.
-    /// Lowest latency, brief leak possible for non-owner speech.
+    /// Open the gate immediately when speech is detected, before speaker
+    /// verification completes. If verification later determines the speaker
+    /// is not the owner, the gate closes.
+    ///
+    /// Trade-off: lowest latency (instant response), but a non-owner's first
+    /// ~1.5s of speech leaks through until verification kicks in.
     Optimistic,
-    /// Keep closed until speaker verification confirms the owner.
-    /// Higher latency (~1.5s), no leak for non-owner speech.
+
+    /// Keep the gate closed until speaker verification positively confirms
+    /// the owner. No audio passes until the model has enough data (~1.5s)
+    /// and the embedding matches the enrolled profile.
+    ///
+    /// Trade-off: no leak for non-owner speech, but the owner experiences
+    /// ~1.5s of silence at the start of each utterance after a long pause.
     Strict,
+}
+
+impl GateMode {
+    /// Decide whether to open the gate when there is not yet enough audio
+    /// for a full speaker verification.
+    ///
+    /// # Arguments
+    /// * `verified_once` — whether at least one verification has completed
+    ///   in the current speech segment.
+    /// * `last_result` — the most recent verification result `(is_owner, similarity)`,
+    ///   if any. Preserved across brief silences.
+    ///
+    /// # Returns
+    /// `(is_owner, similarity)` to use for the gate decision this frame.
+    pub fn pre_verification_decision(
+        self,
+        verified_once: bool,
+        last_result: Option<(bool, f32)>,
+    ) -> (bool, f32) {
+        if verified_once {
+            // Already verified at least once — reuse the last result
+            // regardless of mode. This covers brief pauses and the gap
+            // while the next verification window accumulates.
+            return last_result.unwrap_or((false, 0.0));
+        }
+
+        match self {
+            GateMode::Optimistic => (true, 1.0),
+            GateMode::Strict => (false, 0.0),
+        }
+    }
 }
 
 impl Default for GateMode {

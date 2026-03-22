@@ -8,7 +8,7 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::RwLock;
 
-use crate::config::{Config, GateMode};
+use crate::config::Config;
 use crate::speaker::cosine_similarity;
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
@@ -204,17 +204,10 @@ impl Processor {
         self.verification_buffer.extend(frame.iter());
 
         if self.verification_buffer.len() < self.verification_window_samples {
-            // Not enough audio yet for verification.
-            if self.verified_at_least_once {
-                // Use the last verification result while accumulating more audio.
-                return self.last_verification.unwrap_or((false, 0.0));
-            }
-            return match self.config.gate.mode {
-                // Optimistic: assume owner until first verification completes.
-                GateMode::Optimistic => (true, 1.0),
-                // Strict: don't open until verified.
-                GateMode::Strict => (false, 0.0),
-            };
+            return self.config.gate.mode.pre_verification_decision(
+                self.verified_at_least_once,
+                self.last_verification,
+            );
         }
 
         let window: Vec<f32> = self.verification_buffer.iter().copied().collect();
