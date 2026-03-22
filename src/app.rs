@@ -3,6 +3,7 @@
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{bounded, Sender};
@@ -36,6 +37,7 @@ pub struct VoiceGateApp {
     live: Option<LivePipeline>,
     enrollment: Option<EnrollmentSession>,
     last_error: Option<String>,
+    recording_flag: Arc<AtomicBool>,
 }
 
 impl VoiceGateApp {
@@ -54,6 +56,7 @@ impl VoiceGateApp {
             is_running: false, voice_profile,
             telemetry: Arc::new(RwLock::new(PipelineTelemetry::default())),
             live: None, enrollment: None, last_error: None,
+            recording_flag: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -66,17 +69,21 @@ impl VoiceGateApp {
     }
 
     fn try_start(&mut self) -> anyhow::Result<()> {
-        let sr = self.config.audio.sample_rate;
-        let fs = self.config.audio.frame_samples;
-
-        // Audio I/O
-        let input_dev = crate::audio::capture::default_input_device()?;
+        // Input device
+        let input_dev = match &self.config.audio.input_device {
+            Some(name) => crate::audio::capture::find_input_device(name)?,
+            None => crate::audio::capture::default_input_device()?,
+        };
         let (audio_tx, audio_rx) = bounded::<Vec<f32>>(64);
-        let (input_stream, _) = crate::audio::capture::start_capture(&input_dev, sr, fs, audio_tx.clone())?;
+        let input_stream = crate::audio::capture::start_capture(&input_dev, audio_tx.clone())?;
 
-        let output_dev = crate::audio::output::default_output_device()?;
+        // Output device
+        let output_dev = match &self.config.audio.output_device {
+            Some(name) => crate::audio::output::find_output_device(name)?,
+            None => crate::audio::output::default_output_device()?,
+        };
         let (output_tx, output_rx) = bounded::<Vec<f32>>(64);
-        let output_stream = crate::audio::output::start_output(&output_dev, sr, output_rx)?;
+        let output_stream = crate::audio::output::start_output(&output_dev, output_rx)?;
 
         // ML Models (tract — loaded from ONNX at runtime)
         let vad = SileroVad::new(
@@ -91,11 +98,12 @@ impl VoiceGateApp {
         let telemetry = self.telemetry.clone();
         let profile = self.voice_profile.clone();
         let config = self.config.clone();
+        let recording_flag = self.recording_flag.clone();
 
         let handle = std::thread::Builder::new()
             .name("voice-gate-processor".into())
             .spawn(move || {
-                let mut proc = Processor::new(config, vad, ecapa, profile, telemetry);
+                let mut proc = Processor::new(config, vad, ecapa, profile, telemetry, recording_flag);
                 if let Err(e) = proc.run(audio_rx, output_tx) {
                     log::error!("Processor error: {:#}", e);
                 }
@@ -153,7 +161,17 @@ impl eframe::App for VoiceGateApp {
                     let telem = self.telemetry.clone();
                     let running = self.is_running;
                     let has_profile = self.voice_profile.is_some();
-                    crate::ui::main_view::show(ui, &telem, running, has_profile, &mut || self.toggle());
+                    let is_recording = self.recording_flag.load(std::sync::atomic::Ordering::Relaxed);
+                    let flag = self.recording_flag.clone();
+                    crate::ui::main_view::show(
+                        ui, &telem, running, has_profile,
+                        &mut || self.toggle(),
+                        is_recording,
+                        &mut || {
+                            let prev = flag.load(std::sync::atomic::Ordering::Relaxed);
+                            flag.store(!prev, std::sync::atomic::Ordering::Relaxed);
+                        },
+                    );
                 }
                 ActiveView::Enrollment => {
                     if self.enrollment.is_none() {
