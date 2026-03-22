@@ -49,6 +49,57 @@ pub fn show(ui: &mut Ui, config: &mut Config) -> bool {
 
     ui.add_space(8.0);
     ui.group(|ui| {
+        ui.label(RichText::new("Audio Devices").strong());
+        ui.label(egui::RichText::new("Changes take effect on next Start.").small().weak());
+        ui.add_space(4.0);
+
+        // Input device
+        let input_devices = crate::audio::capture::list_input_devices();
+        let current_input = config.audio.input_device.clone().unwrap_or_else(|| "(System Default)".to_string());
+        ui.horizontal(|ui| {
+            ui.label("Input:");
+            egui::ComboBox::from_id_salt("input_device")
+                .selected_text(&current_input)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(config.audio.input_device.is_none(), "(System Default)").clicked() {
+                        config.audio.input_device = None;
+                        changed = true;
+                    }
+                    for name in &input_devices {
+                        let selected = config.audio.input_device.as_deref() == Some(name.as_str());
+                        if ui.selectable_label(selected, name).clicked() {
+                            config.audio.input_device = Some(name.clone());
+                            changed = true;
+                        }
+                    }
+                });
+        });
+
+        // Output device
+        let output_devices = crate::audio::output::list_output_devices();
+        let current_output = config.audio.output_device.clone().unwrap_or_else(|| "(System Default)".to_string());
+        ui.horizontal(|ui| {
+            ui.label("Output:");
+            egui::ComboBox::from_id_salt("output_device")
+                .selected_text(&current_output)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(config.audio.output_device.is_none(), "(System Default)").clicked() {
+                        config.audio.output_device = None;
+                        changed = true;
+                    }
+                    for name in &output_devices {
+                        let selected = config.audio.output_device.as_deref() == Some(name.as_str());
+                        if ui.selectable_label(selected, name).clicked() {
+                            config.audio.output_device = Some(name.clone());
+                            changed = true;
+                        }
+                    }
+                });
+        });
+    });
+
+    ui.add_space(8.0);
+    ui.group(|ui| {
         ui.label(RichText::new("Runtime").strong());
         ui.label("Inference: tract (CPU, pure Rust)");
         ui.label("Silero VAD: loaded from models/silero_vad.onnx");
