@@ -36,12 +36,14 @@ pub enum DType {
     I64,
 }
 
-/// Describes the expected shape and type of a model input.
-/// Used to resolve dynamic shapes before optimization.
-pub struct InputFact {
-    /// Shape dimensions. Use `0` for dynamic (variable-length) dimensions.
-    pub shape: Vec<usize>,
-    pub dtype: DType,
+/// Describes the expected shape, type, or constant value of a model input.
+/// Used to resolve dynamic shapes and conditional branches before optimization.
+pub enum InputFact {
+    /// Input with a known shape and type. Use `0` in shape for dynamic dimensions.
+    Shape { shape: Vec<usize>, dtype: DType },
+    /// Input with a fixed constant value, baked into the model at load time.
+    /// Enables the optimizer to resolve conditional branches (e.g. If nodes).
+    ConstI64(i64),
 }
 
 /// Opaque model output with typed accessors.
@@ -69,20 +71,27 @@ impl OnnxModel {
 
         let symbols = SymbolScope::default();
         for (i, fact) in input_facts.iter().enumerate() {
-            let shape: Vec<TDim> = fact.shape.iter().enumerate().map(|(dim_idx, &d)| {
-                if d == 0 {
-                    // Create a unique symbol for each dynamic dimension.
-                    let name = format!("d{}_{}", i, dim_idx);
-                    symbols.sym(&name).into()
-                } else {
-                    d.into()
+            match fact {
+                InputFact::Shape { shape, dtype } => {
+                    let dims: Vec<TDim> = shape.iter().enumerate().map(|(dim_idx, &d)| {
+                        if d == 0 {
+                            let name = format!("d{}_{}", i, dim_idx);
+                            symbols.sym(&name).into()
+                        } else {
+                            d.into()
+                        }
+                    }).collect();
+                    let dt = match dtype {
+                        DType::F32 => f32::datum_type(),
+                        DType::I64 => i64::datum_type(),
+                    };
+                    model.set_input_fact(i, InferenceFact::dt_shape(dt, &dims))?;
                 }
-            }).collect();
-            let dt = match fact.dtype {
-                DType::F32 => f32::datum_type(),
-                DType::I64 => i64::datum_type(),
-            };
-            model.set_input_fact(i, InferenceFact::dt_shape(dt, &shape))?;
+                InputFact::ConstI64(value) => {
+                    let tensor = Tensor::from(tract_ndarray::arr0(*value));
+                    model.set_input_fact(i, InferenceFact::from(tensor))?;
+                }
+            }
         }
 
         let plan = model

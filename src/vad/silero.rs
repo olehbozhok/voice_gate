@@ -18,6 +18,10 @@ use anyhow::Result;
 use crate::inference::{DType, Input, InputFact, ModelState, OnnxModel};
 use super::VadResult;
 
+/// Sample rate the Silero VAD model was trained on (16kHz).
+/// Provided as a constant input so tract can resolve conditional branches.
+const SAMPLE_RATE: u32 = 16_000;
+
 /// Expected audio frame size in samples (512 at 16kHz = 32ms).
 /// Silero VAD requires a fixed chunk size for its internal conditional branches.
 const FRAME_SAMPLES: usize = 512;
@@ -40,9 +44,9 @@ impl SileroVad {
     /// Load Silero VAD from an ONNX file.
     pub fn new(threshold: f32, model_path: &Path) -> Result<Self> {
         let model = OnnxModel::load_with_inputs(model_path, &[
-            InputFact { shape: vec![1, FRAME_SAMPLES], dtype: DType::F32 },                // input: [1, 512] fixed chunk
-            InputFact { shape: vec![LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE], dtype: DType::F32 }, // state: [2, 1, 128]
-            InputFact { shape: vec![], dtype: DType::I64 },                                 // sr: scalar
+            InputFact::Shape { shape: vec![1, FRAME_SAMPLES], dtype: DType::F32 },                // input: [1, 512]
+            InputFact::Shape { shape: vec![LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE], dtype: DType::F32 }, // state: [2, 1, 128]
+            InputFact::ConstI64(SAMPLE_RATE as i64),                                               // sr: constant 16000
         ])?;
         log::info!("Silero VAD loaded from {}", model_path.display());
 
@@ -66,10 +70,10 @@ impl SileroVad {
         let state = self.state.take()
             .unwrap_or_else(|| ModelState::zeros_f32(&[LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE]));
 
+        // sr is baked in as a constant at load time — only 2 runtime inputs.
         let mut outputs = self.model.run(vec![
             Input::F32 { shape: vec![1, samples.len()], data: samples.to_vec() },
             Input::State(state),
-            Input::I64 { shape: vec![], data: vec![16000] },
         ])?;
 
         // 2 outputs: [probability, updated_state]

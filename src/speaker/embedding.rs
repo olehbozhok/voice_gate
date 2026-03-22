@@ -18,7 +18,7 @@ impl EcapaTdnn {
     /// Load ECAPA-TDNN from an ONNX file.
     pub fn new(model_path: &Path) -> Result<Self> {
         let model = OnnxModel::load_with_inputs(model_path, &[
-            InputFact { shape: vec![1, 0], dtype: DType::F32 }, // waveform: [1, N]
+            InputFact::Shape { shape: vec![1, 0], dtype: DType::F32 }, // waveform: [1, N]
         ])?;
         log::info!("ECAPA-TDNN loaded from {}", model_path.display());
 
