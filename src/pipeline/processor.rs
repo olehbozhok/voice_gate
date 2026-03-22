@@ -20,6 +20,10 @@ use super::recorder::TestRecorder;
 /// Duration of the speaker verification sliding window in seconds.
 const VERIFICATION_WINDOW_SECS: f32 = 1.5;
 
+/// How long to keep the verification result after speech stops (seconds).
+/// Short pauses within this window don't reset the verification state.
+const VERIFICATION_HOLD_SECS: f32 = 2.0;
+
 /// Commands sent from the UI thread to control enrollment on the processor thread.
 pub enum EnrollmentCommand {
     /// Start recording speech for a new voice profile.
@@ -67,6 +71,14 @@ pub struct Processor {
     gate: GateStateMachine,
     verification_buffer: VecDeque<f32>,
     verification_window_samples: usize,
+    /// Last speaker verification result, kept across brief silences.
+    last_verification: Option<(bool, f32)>,
+    /// True once the first verification has completed for current speech segment.
+    verified_at_least_once: bool,
+    /// Counts consecutive silent frames to decide when to reset verification state.
+    silence_frames: usize,
+    /// Number of silent frames before resetting verification (VERIFICATION_HOLD_SECS).
+    silence_reset_frames: usize,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
     recording_flag: Arc<AtomicBool>,
     recorder: Option<TestRecorder>,
@@ -87,11 +99,17 @@ impl Processor {
         profile_dir: std::path::PathBuf,
     ) -> Self {
         let verification_window_samples = (VERIFICATION_WINDOW_SECS * config.audio.sample_rate as f32) as usize;
+        let frame_duration_secs = config.audio.frame_samples as f32 / config.audio.sample_rate as f32;
+        let silence_reset_frames = (VERIFICATION_HOLD_SECS / frame_duration_secs) as usize;
         Self {
             gate: GateStateMachine::new(config.gate.hold_time_ms),
             config, vad, ecapa, profile,
             verification_buffer: VecDeque::with_capacity(verification_window_samples),
             verification_window_samples,
+            last_verification: None,
+            verified_at_least_once: false,
+            silence_frames: 0,
+            silence_reset_frames,
             telemetry,
             recording_flag,
             recorder: None,
@@ -125,10 +143,22 @@ impl Processor {
 
         // Stage 2: Speaker verification
         let (is_owner, similarity) = if vad_result.is_speech {
+            self.silence_frames = 0;
             self.run_speaker_verification(frame)
         } else {
-            self.verification_buffer.clear();
-            (false, 0.0)
+            self.silence_frames += 1;
+            if self.silence_frames >= self.silence_reset_frames {
+                // Long silence — reset verification state entirely.
+                self.verification_buffer.clear();
+                self.last_verification = None;
+                self.verified_at_least_once = false;
+                (false, 0.0)
+            } else if let Some((is_owner, sim)) = self.last_verification {
+                // Brief pause — keep the last verification result.
+                (is_owner, sim)
+            } else {
+                (false, 0.0)
+            }
         };
 
         // Stage 3: Gate
@@ -174,12 +204,15 @@ impl Processor {
         self.verification_buffer.extend(frame.iter());
 
         if self.verification_buffer.len() < self.verification_window_samples {
+            // Not enough audio yet for verification.
+            if self.verified_at_least_once {
+                // Use the last verification result while accumulating more audio.
+                return self.last_verification.unwrap_or((false, 0.0));
+            }
             return match self.config.gate.mode {
-                // Optimistic: assume owner while accumulating audio.
-                // Gate opens immediately, closes later if not the owner.
+                // Optimistic: assume owner until first verification completes.
                 GateMode::Optimistic => (true, 1.0),
-                // Strict: don't confirm owner until we have enough audio.
-                // Gate stays closed until first verification succeeds.
+                // Strict: don't open until verified.
                 GateMode::Strict => (false, 0.0),
             };
         }
@@ -198,6 +231,8 @@ impl Processor {
                 let sim = cosine_similarity(&profile.centroid, &embedding);
                 let is_owner = sim >= self.config.speaker.similarity_threshold;
                 log::trace!("Speaker similarity: {:.3} (owner: {})", sim, is_owner);
+                self.last_verification = Some((is_owner, sim));
+                self.verified_at_least_once = true;
                 (is_owner, sim)
             }
             Err(e) => {
