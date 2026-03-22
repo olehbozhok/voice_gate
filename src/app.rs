@@ -20,25 +20,40 @@ use crate::vad::silero::SileroVad;
 #[derive(Clone, Copy)]
 enum EnrollmentAction { None, Start, Finalize, Cancel }
 
-struct LivePipeline {
-    _input_stream: cpal::Stream,
-    _output_stream: cpal::Stream,
-    _processor_handle: JoinHandle<()>,
-    _stop_signal: Sender<Vec<f32>>,
-    enrollment_tx: Sender<EnrollmentCommand>,
+/// Pipeline state.
+enum PipelineState {
+    Idle,
+    /// Background thread is loading ML models.
+    LoadingModels,
+    /// Models loaded, pipeline running.
+    Running {
+        _input_stream: cpal::Stream,
+        _output_stream: cpal::Stream,
+        _processor_handle: JoinHandle<()>,
+        _stop_signal: Sender<Vec<f32>>,
+        enrollment_tx: Sender<EnrollmentCommand>,
+    },
+}
+
+/// ML models loaded in background thread (all are Send).
+struct LoadedModels {
+    vad: SileroVad,
+    verifier: SpeakerVerifier,
+    enrollment_ecapa: EcapaTdnn,
 }
 
 pub struct VoiceGateApp {
     config: Arc<RwLock<Config>>,
     config_path: PathBuf,
     active_view: ActiveView,
-    is_running: bool,
     voice_profile: Option<VoiceProfile>,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
-    live: Option<LivePipeline>,
+    pipeline: PipelineState,
     last_error: Option<String>,
     recording_flag: Arc<AtomicBool>,
     device_cache: crate::ui::settings_view::DeviceListCache,
+    /// Receives loaded models from background thread.
+    models_rx: Option<crossbeam_channel::Receiver<Result<LoadedModels, String>>>,
 }
 
 impl VoiceGateApp {
@@ -55,26 +70,104 @@ impl VoiceGateApp {
             config: Arc::new(RwLock::new(config)),
             config_path,
             active_view: ActiveView::Main,
-            is_running: false, voice_profile,
+            voice_profile,
             telemetry: Arc::new(RwLock::new(PipelineTelemetry::default())),
-            live: None, last_error: None,
+            pipeline: PipelineState::Idle,
+            last_error: None,
             recording_flag: Arc::new(AtomicBool::new(false)),
             device_cache: crate::ui::settings_view::DeviceListCache::new(),
+            models_rx: None,
         }
     }
 
-    fn start(&mut self) {
-        if self.is_running { return; }
-        match self.try_start() {
-            Ok(()) => { self.is_running = true; self.last_error = None; log::info!("Pipeline started"); }
-            Err(e) => { self.last_error = Some(format!("Start failed: {}", e)); log::error!("{:#}", e); }
+    fn is_running(&self) -> bool {
+        matches!(self.pipeline, PipelineState::Running { .. })
+    }
+
+    fn is_starting(&self) -> bool {
+        matches!(self.pipeline, PipelineState::LoadingModels)
+    }
+
+    fn start(&mut self, ctx: &egui::Context) {
+        if self.is_running() || self.is_starting() { return; }
+
+        self.pipeline = PipelineState::LoadingModels;
+        self.last_error = None;
+
+        // Load models in background (heavy — takes seconds).
+        let (tx, rx) = bounded(1);
+        self.models_rx = Some(rx);
+
+        let config = self.config.clone();
+        let voice_profile = self.voice_profile.clone();
+        let ctx = ctx.clone();
+
+        std::thread::Builder::new()
+            .name("model-loader".into())
+            .spawn(move || {
+                let result = Self::load_models(config, voice_profile);
+                let _ = tx.send(result.map_err(|e| format!("{:#}", e)));
+                ctx.request_repaint();
+            })
+            .expect("failed to spawn model-loader thread");
+    }
+
+    /// Load ML models — runs on background thread.
+    fn load_models(
+        config: Arc<RwLock<Config>>,
+        voice_profile: Option<VoiceProfile>,
+    ) -> anyhow::Result<LoadedModels> {
+        log::info!("Loading models...");
+        let vad = SileroVad::new(Path::new("models/silero_vad.onnx"))?;
+        let ecapa_for_verifier = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
+        let verifier = SpeakerVerifier::spawn(ecapa_for_verifier, voice_profile, config);
+        let enrollment_ecapa = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
+        log::info!("Models loaded");
+        Ok(LoadedModels { vad, verifier, enrollment_ecapa })
+    }
+
+    /// Check if models have finished loading, then start audio + processor.
+    fn poll_startup(&mut self) {
+        let rx = match &self.models_rx {
+            Some(rx) => rx,
+            None => return,
+        };
+
+        let result = match rx.try_recv() {
+            Ok(r) => r,
+            Err(crossbeam_channel::TryRecvError::Empty) => return,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                self.pipeline = PipelineState::Idle;
+                self.last_error = Some("Model loader thread crashed".into());
+                self.models_rx = None;
+                return;
+            }
+        };
+        self.models_rx = None;
+
+        match result {
+            Ok(models) => {
+                match self.start_pipeline(models) {
+                    Ok(()) => log::info!("Pipeline started"),
+                    Err(e) => {
+                        self.pipeline = PipelineState::Idle;
+                        self.last_error = Some(format!("Start failed: {:#}", e));
+                        log::error!("Pipeline start failed: {:#}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                self.pipeline = PipelineState::Idle;
+                self.last_error = Some(format!("Model loading failed: {}", e));
+                log::error!("Model loading failed: {}", e);
+            }
         }
     }
 
-    fn try_start(&mut self) -> anyhow::Result<()> {
+    /// Start audio streams and processor — runs on UI thread (fast, no model loading).
+    fn start_pipeline(&mut self, models: LoadedModels) -> anyhow::Result<()> {
         let cfg = self.config.read();
 
-        // Input device
         let input_dev = match &cfg.audio.input_device {
             Some(name) => crate::audio::capture::find_input_device(name)?,
             None => crate::audio::capture::default_input_device()?,
@@ -82,7 +175,6 @@ impl VoiceGateApp {
         let (audio_tx, audio_rx) = bounded::<Vec<f32>>(64);
         let input_stream = crate::audio::capture::start_capture(&input_dev, audio_tx.clone())?;
 
-        // Output device
         let output_dev = match &cfg.audio.output_device {
             Some(name) => crate::audio::output::find_output_device(name)?,
             None => crate::audio::output::default_output_device()?,
@@ -90,27 +182,11 @@ impl VoiceGateApp {
         let (output_tx, output_rx) = bounded::<Vec<f32>>(64);
         let output_stream = crate::audio::output::start_output(&output_dev, output_rx)?;
 
-        // ML Models (ort — loaded from ONNX at runtime)
-        let vad = SileroVad::new(Path::new("models/silero_vad.onnx"))?;
-
-        // Speaker verification — runs ECAPA-TDNN in a background thread
-        let ecapa_for_verifier = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
-        let verifier = SpeakerVerifier::spawn(
-            ecapa_for_verifier,
-            self.voice_profile.clone(),
-            self.config.clone(),
-        );
-
-        // Separate ECAPA-TDNN instance for enrollment (one-time use)
-        let ecapa_for_enrollment = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
-
         let profile_dir = cfg.profiles_dir.clone();
-        drop(cfg); // release read lock before spawning
+        drop(cfg);
 
-        // Enrollment command channel
         let (enrollment_tx, enrollment_rx) = bounded::<EnrollmentCommand>(8);
 
-        // Processor thread
         let telemetry = self.telemetry.clone();
         let config = self.config.clone();
         let recording_flag = self.recording_flag.clone();
@@ -119,7 +195,7 @@ impl VoiceGateApp {
             .name("voice-gate-processor".into())
             .spawn(move || {
                 let mut proc = Processor::new(
-                    config, vad, verifier, ecapa_for_enrollment,
+                    config, models.vad, models.verifier, models.enrollment_ecapa,
                     telemetry, recording_flag, enrollment_rx, profile_dir,
                 );
                 if let Err(e) = proc.run(audio_rx, output_tx) {
@@ -127,36 +203,38 @@ impl VoiceGateApp {
                 }
             })?;
 
-        self.live = Some(LivePipeline {
-            _input_stream: input_stream, _output_stream: output_stream,
-            _processor_handle: handle, _stop_signal: audio_tx,
+        self.pipeline = PipelineState::Running {
+            _input_stream: input_stream,
+            _output_stream: output_stream,
+            _processor_handle: handle,
+            _stop_signal: audio_tx,
             enrollment_tx,
-        });
+        };
         Ok(())
     }
 
     fn stop(&mut self) {
-        self.live = None;
-        self.is_running = false;
+        self.pipeline = PipelineState::Idle;
         *self.telemetry.write() = PipelineTelemetry::default();
         log::info!("Pipeline stopped");
     }
 
-    fn toggle(&mut self) {
-        if self.is_running { self.stop(); } else { self.start(); }
+    fn toggle(&mut self, ctx: &egui::Context) {
+        if self.is_running() { self.stop(); } else { self.start(ctx); }
     }
 
-    /// Send an enrollment command to the processor thread.
     fn send_enrollment(&self, cmd: EnrollmentCommand) {
-        if let Some(ref live) = self.live {
-            let _ = live.enrollment_tx.try_send(cmd);
+        if let PipelineState::Running { ref enrollment_tx, .. } = self.pipeline {
+            let _ = enrollment_tx.try_send(cmd);
         }
     }
 }
 
 impl eframe::App for VoiceGateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.is_running {
+        self.poll_startup();
+
+        if self.is_running() || self.is_starting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
 
@@ -183,18 +261,30 @@ impl eframe::App for VoiceGateApp {
         if clear_error { self.last_error = None; }
 
         // Central panel
+        let ctx_clone = ctx.clone();
         egui::CentralPanel::default().show(ctx, |ui| {
             match self.active_view {
                 ActiveView::Main => {
+                    if self.is_starting() {
+                        ui.heading("Voice Gate");
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Loading models...");
+                        });
+                        return;
+                    }
+
                     let telem = self.telemetry.clone();
                     let cfg = self.config.clone();
-                    let running = self.is_running;
+                    let running = self.is_running();
                     let has_profile = self.voice_profile.is_some();
                     let is_recording = self.recording_flag.load(std::sync::atomic::Ordering::Relaxed);
                     let flag = self.recording_flag.clone();
+
                     crate::ui::main_view::show(
                         ui, &telem, &cfg, running, has_profile,
-                        &mut || self.toggle(),
+                        &mut || self.toggle(&ctx_clone),
                         is_recording,
                         &mut || {
                             let prev = flag.load(std::sync::atomic::Ordering::Relaxed);
@@ -209,7 +299,7 @@ impl eframe::App for VoiceGateApp {
                     drop(t);
                     let min = self.config.read().speaker.min_enrollment_seconds;
 
-                    if !self.is_running {
+                    if !self.is_running() {
                         ui.heading("Voice Enrollment");
                         ui.add_space(8.0);
                         ui.label("Start the pipeline first (click Start on Dashboard).");
