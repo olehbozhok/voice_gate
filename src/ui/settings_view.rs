@@ -83,14 +83,23 @@ impl DeviceListCache {
     }
 }
 
-/// Returns true if anything changed.
+/// Result of showing settings UI.
+pub struct SettingsResult {
+    /// Any setting was modified (triggers config save).
+    pub changed: bool,
+    /// Audio device was changed (triggers pipeline restart).
+    pub device_changed: bool,
+}
+
+/// Returns what changed in settings.
 pub fn show(
     ui: &mut Ui,
     config: &mut Config,
     devices: &DeviceListCache,
     ctx: &egui::Context,
-) -> bool {
+) -> SettingsResult {
     let mut changed = false;
+    let mut device_changed = false;
     ui.heading("Settings");
     ui.add_space(8.0);
 
@@ -222,12 +231,14 @@ pub fn show(
                 {
                     config.audio.input_device = None;
                     changed = true;
+                    device_changed = true;
                 }
                 for name in &input_devices {
                     let selected = config.audio.input_device.as_deref() == Some(name.as_str());
                     if ui.selectable_label(selected, name).clicked() {
                         config.audio.input_device = Some(name.clone());
                         changed = true;
+                        device_changed = true;
                     }
                 }
             });
@@ -254,12 +265,14 @@ pub fn show(
                 {
                     config.audio.output_device = None;
                     changed = true;
+                    device_changed = true;
                 }
                 for name in &output_devices {
                     let selected = config.audio.output_device.as_deref() == Some(name.as_str());
                     if ui.selectable_label(selected, name).clicked() {
                         config.audio.output_device = Some(name.clone());
                         changed = true;
+                        device_changed = true;
                     }
                 }
             });
@@ -277,5 +290,8 @@ pub fn show(
         ui.label("ECAPA-TDNN: loaded from models/ecapa_tdnn.onnx");
     });
 
-    changed
+    SettingsResult {
+        changed,
+        device_changed,
+    }
 }

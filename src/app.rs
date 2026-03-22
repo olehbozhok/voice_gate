@@ -451,8 +451,16 @@ impl eframe::App for VoiceGateApp {
             }
             ActiveView::Settings => {
                 let mut cfg = self.config.write();
-                if crate::ui::settings_view::show(ui, &mut cfg, &self.device_cache, ctx) {
+                let result =
+                    crate::ui::settings_view::show(ui, &mut cfg, &self.device_cache, ctx);
+                if result.changed {
                     let _ = cfg.save(&self.config_path);
+                }
+                if result.device_changed && self.is_running() {
+                    drop(cfg);
+                    log::info!("Audio device changed — restarting pipeline");
+                    self.stop();
+                    self.start(ctx);
                 }
             }
         });
