@@ -11,12 +11,22 @@ fn default_models_dir() -> PathBuf {
     }
 }
 
+/// Returns the platform-appropriate default directory for voice profiles.
+fn default_profiles_dir() -> PathBuf {
+    if let Some(data_dir) = dirs::data_dir() {
+        data_dir.join("voice-gate").join("profiles")
+    } else {
+        PathBuf::from("profiles")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub audio: AudioConfig,
     pub vad: VadConfig,
     pub speaker: SpeakerConfig,
     pub gate: GateConfig,
+    #[serde(default = "default_profiles_dir")]
     pub profiles_dir: PathBuf,
     /// Directory where ONNX model files are stored.
     /// Default: `%APPDATA%/voice-gate/models/` (Windows) or `~/.local/share/voice-gate/models/`.
@@ -300,7 +310,7 @@ impl Default for Config {
                 pre_buffer_ms: 100,
                 mode: GateMode::Optimistic,
             },
-            profiles_dir: PathBuf::from("profiles"),
+            profiles_dir: default_profiles_dir(),
             models_dir: default_models_dir(),
         }
     }

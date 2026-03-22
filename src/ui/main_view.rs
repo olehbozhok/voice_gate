@@ -145,6 +145,21 @@ pub fn show(
                 );
                 ui.end_row();
 
+                ui.label("Profile:");
+                if let Some(name) = &t.matched_profile {
+                    ui.label(
+                        RichText::new(name)
+                            .color(if sim_above {
+                                Color32::from_rgb(50, 205, 50)
+                            } else {
+                                Color32::from_rgb(230, 160, 60)
+                            }),
+                    );
+                } else {
+                    ui.label(RichText::new("—").color(Color32::from_rgb(180, 180, 180)));
+                }
+                ui.end_row();
+
                 ui.label("Open:");
                 let open_color = if t.gate_open {
                     Color32::from_rgb(50, 205, 50)

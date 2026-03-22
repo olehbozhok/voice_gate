@@ -11,13 +11,15 @@ use crossbeam_channel::{bounded, Sender};
 use parking_lot::RwLock;
 
 use crate::speaker::embedding::EcapaTdnn;
-use crate::speaker::profile::VoiceProfile;
+use crate::speaker::profile::{ProfileStore, VoiceProfile};
 
 /// Shared verification result, updated by the verifier thread.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct VerificationResult {
     /// Best cosine similarity across all enrolled profiles.
     pub similarity: f32,
+    /// Name of the profile with the best match.
+    pub matched_profile: Option<String>,
 }
 
 /// Handle to the background verifier thread.
@@ -25,55 +27,61 @@ pub struct SpeakerVerifier {
     tx: Sender<Vec<f32>>,
     result: Arc<RwLock<Option<VerificationResult>>>,
     verified: Arc<AtomicBool>,
-    has_profiles: bool,
+    profile_store: Arc<RwLock<ProfileStore>>,
 }
 
 impl SpeakerVerifier {
     /// Spawn the background verifier thread.
     ///
     /// * `ecapa` — the ECAPA-TDNN model (moved into the thread).
-    /// * `profiles` — all enrolled voice profiles to compare against.
-    pub fn spawn(mut ecapa: EcapaTdnn, profiles: Vec<VoiceProfile>) -> Self {
+    /// * `profile_store` — shared profile store, read each verification cycle.
+    pub fn spawn(mut ecapa: EcapaTdnn, profile_store: Arc<RwLock<ProfileStore>>) -> Self {
         /// Maximum pending audio windows in the channel.
         const CHANNEL_CAPACITY: usize = 4;
 
-        let has_profiles = !profiles.is_empty();
         let (tx, rx) = bounded::<Vec<f32>>(CHANNEL_CAPACITY);
         let result: Arc<RwLock<Option<VerificationResult>>> = Arc::new(RwLock::new(None));
         let verified = Arc::new(AtomicBool::new(false));
 
         let result_writer = result.clone();
         let verified_flag = verified.clone();
+        let store = profile_store.clone();
 
         std::thread::Builder::new()
             .name("speaker-verifier".into())
             .spawn(move || {
-                log::info!(
-                    "Speaker verifier thread started ({} profiles)",
-                    profiles.len()
-                );
+                log::info!("Speaker verifier thread started");
                 while let Ok(window) = rx.recv() {
+                    let profiles = store.read();
                     if profiles.is_empty() {
+                        drop(profiles);
                         continue;
                     }
 
                     match ecapa.extract(&window) {
                         Ok(embedding) => {
-                            // Compare against all profiles, take best match.
                             let mut best_sim = 0.0f32;
-                            for profile in &profiles {
+                            let mut best_name: Option<String> = None;
+                            for profile in profiles.profiles() {
                                 let sim = profile.similarity(&embedding);
-                                best_sim = best_sim.max(sim);
+                                if sim > best_sim {
+                                    best_sim = sim;
+                                    best_name = Some(profile.name.clone());
+                                }
                             }
+                            let count = profiles.len();
+                            drop(profiles);
 
                             log::trace!(
-                                "Speaker similarity: {:.3} (best of {})",
+                                "Speaker similarity: {:.3} (best of {}, matched: {:?})",
                                 best_sim,
-                                profiles.len()
+                                count,
+                                best_name
                             );
 
                             *result_writer.write() = Some(VerificationResult {
                                 similarity: best_sim,
+                                matched_profile: best_name,
                             });
                             verified_flag.store(true, Ordering::Relaxed);
                         }
@@ -90,7 +98,7 @@ impl SpeakerVerifier {
             tx,
             result,
             verified,
-            has_profiles,
+            profile_store,
         }
     }
 
@@ -101,7 +109,7 @@ impl SpeakerVerifier {
 
     /// Read the latest verification result (non-blocking).
     pub fn result(&self) -> Option<VerificationResult> {
-        *self.result.read()
+        self.result.read().clone()
     }
 
     /// Whether at least one verification has completed.
@@ -109,9 +117,9 @@ impl SpeakerVerifier {
         self.verified.load(Ordering::Relaxed)
     }
 
-    /// Whether any enrolled profiles were provided.
+    /// Whether any enrolled profiles exist.
     pub fn has_profile(&self) -> bool {
-        self.has_profiles
+        !self.profile_store.read().is_empty()
     }
 
     /// Reset the verification state.

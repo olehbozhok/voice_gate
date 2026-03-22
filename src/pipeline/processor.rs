@@ -38,6 +38,8 @@ pub struct PipelineTelemetry {
     pub input_level: f32,
     pub vad_probability: f32,
     pub speaker_similarity: f32,
+    /// Name of the best-matching voice profile.
+    pub matched_profile: Option<String>,
     pub gate_open: bool,
     /// Current enrollment state, if enrollment is active.
     pub enrollment_state: EnrollmentState,
@@ -52,6 +54,7 @@ impl Default for PipelineTelemetry {
             input_level: 0.0,
             vad_probability: 0.0,
             speaker_similarity: 0.0,
+            matched_profile: None,
             gate_open: false,
             enrollment_state: EnrollmentState::Idle,
             enrollment_speech_secs: 0.0,
@@ -152,12 +155,14 @@ impl Processor {
 
         // Stage 3: GateMode makes the full decision.
         let ver_result = self.verifier.result();
+        let similarity = ver_result.as_ref().map(|r| r.similarity).unwrap_or(0.0);
+        let matched_profile = ver_result.as_ref().and_then(|r| r.matched_profile.clone());
         let cfg = self.config.read();
         let gate_input = GateInput {
             speech_probability,
             vad_threshold,
             verified: self.verifier.has_verified(),
-            similarity: ver_result.map(|r| r.similarity),
+            similarity: ver_result.as_ref().map(|r| r.similarity),
             similarity_threshold: cfg.speaker.similarity_threshold,
             has_profile: self.verifier.has_profile(),
             hold_time_ms: cfg.gate.hold_time_ms,
@@ -172,8 +177,6 @@ impl Processor {
         }
 
         let gate_open = decision.pass_audio;
-
-        let similarity = ver_result.map(|r| r.similarity).unwrap_or(0.0);
         let vad_result = VadResult {
             speech_probability,
             is_speech,
@@ -197,6 +200,7 @@ impl Processor {
             t.input_level = input_level;
             t.vad_probability = vad_result.speech_probability;
             t.speaker_similarity = similarity;
+            t.matched_profile = matched_profile;
             t.gate_open = gate_open;
         }
 
