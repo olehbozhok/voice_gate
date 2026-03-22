@@ -147,9 +147,14 @@ impl Processor {
         // Enrollment: feed audio frames when recording
         if let Some(ref mut session) = self.enrollment {
             session.feed_frame(frame, &vad_result);
+            let secs = session.speech_seconds();
+            log::trace!(
+                "Enrollment: vad={:.3} is_speech={} speech_secs={:.1} state={:?}",
+                vad_result.speech_probability, vad_result.is_speech, secs, session.state
+            );
             let mut t = self.telemetry.write();
             t.enrollment_state = session.state.clone();
-            t.enrollment_speech_secs = session.speech_seconds();
+            t.enrollment_speech_secs = secs;
         }
 
         let output = if state.is_open() {
