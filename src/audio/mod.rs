@@ -1,5 +1,6 @@
 //! Audio I/O layer via cpal.
 pub mod capture;
+pub mod mel;
 pub mod output;
 pub mod resampler;
 

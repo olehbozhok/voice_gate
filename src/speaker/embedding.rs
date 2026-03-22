@@ -1,12 +1,15 @@
 //! ECAPA-TDNN speaker embedding extractor via ONNX Runtime.
 //!
-//! The ONNX model is loaded at runtime from `models/ecapa_tdnn.onnx`.
+//! The WeSpeaker ECAPA-TDNN model expects mel-filterbank features
+//! as input `[1, num_frames, 80]`, not raw audio. This module computes
+//! mel features from raw waveform before feeding to the model.
 
 use std::path::Path;
 
 use anyhow::Result;
 
 use crate::audio::PIPELINE_SAMPLE_RATE;
+use crate::audio::mel;
 use crate::inference::{Input, OnnxModel};
 
 /// Wrapper around the ECAPA-TDNN ONNX model.
@@ -29,7 +32,9 @@ impl EcapaTdnn {
         Ok(ecapa)
     }
 
-    /// Extract a speaker embedding from an audio waveform.
+    /// Extract a speaker embedding from raw 16kHz mono audio.
+    ///
+    /// Internally computes mel-filterbank features before running the model.
     ///
     /// # Arguments
     ///
@@ -47,10 +52,18 @@ impl EcapaTdnn {
             );
         }
 
+        // Compute mel-filterbank features: [num_frames, 80]
+        let (features, num_frames) = mel::compute_mel_features(waveform);
+
+        if num_frames == 0 {
+            anyhow::bail!("audio too short to compute mel features");
+        }
+
+        // Model expects [batch=1, num_frames, 80]
         let outputs = self.model.run(vec![
             Input::F32 {
-                shape: vec![1, waveform.len()],
-                data: waveform.to_vec(),
+                shape: vec![1, num_frames, mel::N_MELS],
+                data: features,
             },
         ])?;
 

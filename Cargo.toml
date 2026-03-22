@@ -24,6 +24,9 @@ hound = "3.5"
 eframe = "0.31"
 egui = "0.31"
 
+# ── DSP (mel-spectrogram for speaker embedding) ───────────────────────
+rustfft = "6"
+
 # ── Utilities ──────────────────────────────────────────────────────────
 anyhow = "1"
 thiserror = "2"
