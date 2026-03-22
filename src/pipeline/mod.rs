@@ -2,3 +2,4 @@
 pub mod processor;
 pub mod recorder;
 pub mod state_machine;
+pub mod verifier;

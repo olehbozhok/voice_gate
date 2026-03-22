@@ -11,6 +11,7 @@ use parking_lot::RwLock;
 
 use crate::config::Config;
 use crate::pipeline::processor::{EnrollmentCommand, PipelineTelemetry, Processor};
+use crate::pipeline::verifier::SpeakerVerifier;
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::profile::VoiceProfile;
 use crate::ui::ActiveView;
@@ -28,7 +29,7 @@ struct LivePipeline {
 }
 
 pub struct VoiceGateApp {
-    config: Config,
+    config: Arc<RwLock<Config>>,
     config_path: PathBuf,
     active_view: ActiveView,
     is_running: bool,
@@ -51,7 +52,8 @@ impl VoiceGateApp {
         else { log::info!("No voice profile — enrollment required"); }
 
         Self {
-            config, config_path,
+            config: Arc::new(RwLock::new(config)),
+            config_path,
             active_view: ActiveView::Main,
             is_running: false, voice_profile,
             telemetry: Arc::new(RwLock::new(PipelineTelemetry::default())),
@@ -70,8 +72,10 @@ impl VoiceGateApp {
     }
 
     fn try_start(&mut self) -> anyhow::Result<()> {
+        let cfg = self.config.read();
+
         // Input device
-        let input_dev = match &self.config.audio.input_device {
+        let input_dev = match &cfg.audio.input_device {
             Some(name) => crate::audio::capture::find_input_device(name)?,
             None => crate::audio::capture::default_input_device()?,
         };
@@ -79,7 +83,7 @@ impl VoiceGateApp {
         let input_stream = crate::audio::capture::start_capture(&input_dev, audio_tx.clone())?;
 
         // Output device
-        let output_dev = match &self.config.audio.output_device {
+        let output_dev = match &cfg.audio.output_device {
             Some(name) => crate::audio::output::find_output_device(name)?,
             None => crate::audio::output::default_output_device()?,
         };
@@ -87,30 +91,36 @@ impl VoiceGateApp {
         let output_stream = crate::audio::output::start_output(&output_dev, output_rx)?;
 
         // ML Models (ort — loaded from ONNX at runtime)
-        let vad = SileroVad::new(
-            self.config.vad.threshold,
-            Path::new("models/silero_vad.onnx"),
-        )?;
-        let ecapa = EcapaTdnn::new(
-            Path::new("models/ecapa_tdnn.onnx"),
-        )?;
+        let vad = SileroVad::new(Path::new("models/silero_vad.onnx"))?;
+
+        // Speaker verification — runs ECAPA-TDNN in a background thread
+        let ecapa_for_verifier = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
+        let verifier = SpeakerVerifier::spawn(
+            ecapa_for_verifier,
+            self.voice_profile.clone(),
+            self.config.clone(),
+        );
+
+        // Separate ECAPA-TDNN instance for enrollment (one-time use)
+        let ecapa_for_enrollment = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
+
+        let profile_dir = cfg.profiles_dir.clone();
+        drop(cfg); // release read lock before spawning
 
         // Enrollment command channel
         let (enrollment_tx, enrollment_rx) = bounded::<EnrollmentCommand>(8);
 
         // Processor thread
         let telemetry = self.telemetry.clone();
-        let profile = self.voice_profile.clone();
         let config = self.config.clone();
         let recording_flag = self.recording_flag.clone();
-        let profile_dir = self.config.profiles_dir.clone();
 
         let handle = std::thread::Builder::new()
             .name("voice-gate-processor".into())
             .spawn(move || {
                 let mut proc = Processor::new(
-                    config, vad, ecapa, profile, telemetry,
-                    recording_flag, enrollment_rx, profile_dir,
+                    config, vad, verifier, ecapa_for_enrollment,
+                    telemetry, recording_flag, enrollment_rx, profile_dir,
                 );
                 if let Err(e) = proc.run(audio_rx, output_tx) {
                     log::error!("Processor error: {:#}", e);
@@ -192,12 +202,11 @@ impl eframe::App for VoiceGateApp {
                     );
                 }
                 ActiveView::Enrollment => {
-                    // Read enrollment state from telemetry (non-blocking).
                     let t = self.telemetry.read();
                     let state = t.enrollment_state.clone();
                     let secs = t.enrollment_speech_secs;
-                    let min = self.config.speaker.min_enrollment_seconds;
                     drop(t);
+                    let min = self.config.read().speaker.min_enrollment_seconds;
 
                     if !self.is_running {
                         ui.heading("Voice Enrollment");
@@ -220,8 +229,9 @@ impl eframe::App for VoiceGateApp {
                     }
                 }
                 ActiveView::Settings => {
-                    if crate::ui::settings_view::show(ui, &mut self.config, &self.device_cache, ctx) {
-                        let _ = self.config.save(&self.config_path);
+                    let mut cfg = self.config.write();
+                    if crate::ui::settings_view::show(ui, &mut cfg, &self.device_cache, ctx) {
+                        let _ = cfg.save(&self.config_path);
                     }
                 }
             }
