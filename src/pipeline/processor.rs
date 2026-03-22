@@ -14,7 +14,7 @@ use super::verifier::SpeakerVerifier;
 use crate::config::{Config, GateInput, GateDecision};
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
-use crate::speaker::profile::VoiceProfile;
+use crate::speaker::profile::{ProfileStore, VoiceProfile};
 use crate::vad::silero::SileroVad;
 use crate::vad::VadResult;
 
@@ -82,7 +82,8 @@ pub struct Processor {
     enrollment_rx: Receiver<EnrollmentCommand>,
     /// Separate ECAPA-TDNN instance for enrollment (main one is in verifier thread).
     enrollment_ecapa: EcapaTdnn,
-    profile_dir: std::path::PathBuf,
+    /// Shared profile store for saving new enrollments.
+    profile_store: Arc<RwLock<ProfileStore>>,
 }
 
 impl Processor {
@@ -94,7 +95,7 @@ impl Processor {
         telemetry: Arc<RwLock<PipelineTelemetry>>,
         recording_flag: Arc<AtomicBool>,
         enrollment_rx: Receiver<EnrollmentCommand>,
-        profile_dir: std::path::PathBuf,
+        profile_store: Arc<RwLock<ProfileStore>>,
     ) -> Self {
         let cfg = config.read();
         let verification_window_samples =
@@ -115,7 +116,7 @@ impl Processor {
             recorder: None,
             enrollment: None,
             enrollment_rx,
-            profile_dir,
+            profile_store,
         }
     }
 
@@ -317,15 +318,15 @@ impl Processor {
         }
 
         let duration = session.speech_seconds();
-        match VoiceProfile::from_embeddings("default", &embeddings, duration) {
+        let count = self.profile_store.read().len() + 1;
+        let name = format!("Profile {}", count);
+        match VoiceProfile::from_embeddings(&name, &embeddings, duration) {
             Ok(profile) => {
-                let path = self.profile_dir.join("default.json");
-                match profile.save(&path) {
+                match self.profile_store.write().add(profile) {
                     Ok(()) => {
                         log::info!(
-                            "Enrollment complete: {} segments, {:.1}s",
-                            embeddings.len(),
-                            duration
+                            "Enrollment complete: '{}', {} segments, {:.1}s",
+                            name, embeddings.len(), duration
                         );
                         let mut t = self.telemetry.write();
                         t.enrollment_state = EnrollmentState::Done;

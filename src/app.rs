@@ -13,8 +13,9 @@ use crate::config::Config;
 use crate::pipeline::processor::{EnrollmentCommand, PipelineTelemetry, Processor};
 use crate::pipeline::verifier::SpeakerVerifier;
 use crate::speaker::embedding::EcapaTdnn;
-use crate::speaker::profile::VoiceProfile;
+use crate::speaker::profile::{ProfileStore, VoiceProfile};
 use crate::ui::ActiveView;
+use crate::ui::enrollment_view::EnrollmentViewState;
 use crate::vad::silero::SileroVad;
 
 #[derive(Clone, Copy)]
@@ -46,12 +47,13 @@ pub struct VoiceGateApp {
     config: Arc<RwLock<Config>>,
     config_path: PathBuf,
     active_view: ActiveView,
-    voice_profile: Option<VoiceProfile>,
+    profile_store: Arc<RwLock<ProfileStore>>,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
     pipeline: PipelineState,
     last_error: Option<String>,
     recording_flag: Arc<AtomicBool>,
     device_cache: crate::ui::settings_view::DeviceListCache,
+    enrollment_view_state: EnrollmentViewState,
     /// Receives loaded models from background thread.
     models_rx: Option<crossbeam_channel::Receiver<Result<LoadedModels, String>>>,
 }
@@ -60,22 +62,19 @@ impl VoiceGateApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let config_path = PathBuf::from("config.json");
         let config = Config::load(&config_path);
-        let profile_path = config.profiles_dir.join("default.json");
-        let voice_profile = VoiceProfile::load(&profile_path).ok();
-
-        if voice_profile.is_some() { log::info!("Loaded voice profile"); }
-        else { log::info!("No voice profile — enrollment required"); }
+        let profile_store = ProfileStore::load(&config.profiles_dir);
 
         Self {
             config: Arc::new(RwLock::new(config)),
             config_path,
             active_view: ActiveView::Main,
-            voice_profile,
+            profile_store: Arc::new(RwLock::new(profile_store)),
             telemetry: Arc::new(RwLock::new(PipelineTelemetry::default())),
             pipeline: PipelineState::Idle,
             last_error: None,
             recording_flag: Arc::new(AtomicBool::new(false)),
             device_cache: crate::ui::settings_view::DeviceListCache::new(),
+            enrollment_view_state: EnrollmentViewState::default(),
             models_rx: None,
         }
     }
@@ -99,13 +98,13 @@ impl VoiceGateApp {
         self.models_rx = Some(rx);
 
         let config = self.config.clone();
-        let voice_profile = self.voice_profile.clone();
+        let profiles = self.profile_store.read().profiles().to_vec();
         let ctx = ctx.clone();
 
         std::thread::Builder::new()
             .name("model-loader".into())
             .spawn(move || {
-                let result = Self::load_models(config, voice_profile);
+                let result = Self::load_models(config, profiles);
                 let _ = tx.send(result.map_err(|e| format!("{:#}", e)));
                 ctx.request_repaint();
             })
@@ -115,12 +114,12 @@ impl VoiceGateApp {
     /// Load ML models — runs on background thread.
     fn load_models(
         config: Arc<RwLock<Config>>,
-        voice_profile: Option<VoiceProfile>,
+        profiles: Vec<VoiceProfile>,
     ) -> anyhow::Result<LoadedModels> {
         log::info!("Loading models...");
         let vad = SileroVad::new(Path::new("models/silero_vad.onnx"))?;
         let ecapa_for_verifier = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
-        let verifier = SpeakerVerifier::spawn(ecapa_for_verifier, voice_profile, config);
+        let verifier = SpeakerVerifier::spawn(ecapa_for_verifier, profiles, config);
         let enrollment_ecapa = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
         log::info!("Models loaded");
         Ok(LoadedModels { vad, verifier, enrollment_ecapa })
@@ -182,7 +181,7 @@ impl VoiceGateApp {
         let (output_tx, output_rx) = bounded::<Vec<f32>>(64);
         let output_stream = crate::audio::output::start_output(&output_dev, output_rx)?;
 
-        let profile_dir = cfg.profiles_dir.clone();
+        let profile_store = self.profile_store.clone();
         drop(cfg);
 
         let (enrollment_tx, enrollment_rx) = bounded::<EnrollmentCommand>(8);
@@ -196,7 +195,7 @@ impl VoiceGateApp {
             .spawn(move || {
                 let mut proc = Processor::new(
                     config, models.vad, models.verifier, models.enrollment_ecapa,
-                    telemetry, recording_flag, enrollment_rx, profile_dir,
+                    telemetry, recording_flag, enrollment_rx, profile_store,
                 );
                 if let Err(e) = proc.run(audio_rx, output_tx) {
                     log::error!("Processor error: {:#}", e);
@@ -278,7 +277,7 @@ impl eframe::App for VoiceGateApp {
                     let telem = self.telemetry.clone();
                     let cfg = self.config.clone();
                     let running = self.is_running();
-                    let has_profile = self.voice_profile.is_some();
+                    let has_profile = !self.profile_store.read().is_empty();
                     let is_recording = self.recording_flag.load(std::sync::atomic::Ordering::Relaxed);
                     let flag = self.recording_flag.clone();
 
@@ -308,6 +307,7 @@ impl eframe::App for VoiceGateApp {
 
                     let action = Cell::new(EnrollmentAction::None);
                     crate::ui::enrollment_view::show(ui, &state, secs, min,
+                        &self.profile_store, &mut self.enrollment_view_state,
                         &mut || action.set(EnrollmentAction::Start),
                         &mut || action.set(EnrollmentAction::Finalize),
                         &mut || action.set(EnrollmentAction::Cancel),
