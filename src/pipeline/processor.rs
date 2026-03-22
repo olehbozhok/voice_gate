@@ -9,9 +9,9 @@ use crossbeam_channel::{Receiver, Sender};
 use parking_lot::RwLock;
 
 use super::recorder::TestRecorder;
-use super::state_machine::{GateState, GateStateMachine};
+use super::state_machine::GateState;
 use super::verifier::SpeakerVerifier;
-use crate::config::{Config, VerificationState};
+use crate::config::{Config, GateInput};
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
 use crate::speaker::profile::VoiceProfile;
@@ -68,8 +68,11 @@ impl Default for PipelineTelemetry {
 pub struct Processor {
     config: Arc<RwLock<Config>>,
     vad: SileroVad,
-    gate: GateStateMachine,
     verifier: SpeakerVerifier,
+    /// Continuous silence duration in milliseconds (reset on speech).
+    silence_ms: u32,
+    /// Duration of a single frame in milliseconds.
+    frame_ms: u32,
     verification_buffer: VecDeque<f32>,
     verification_window_samples: usize,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
@@ -96,13 +99,14 @@ impl Processor {
         let cfg = config.read();
         let verification_window_samples =
             (VERIFICATION_WINDOW_SECS * cfg.audio.sample_rate as f32) as usize;
-        let gate = GateStateMachine::new(cfg.gate.hold_time_ms);
+        let frame_ms = (cfg.audio.frame_samples as f32 / cfg.audio.sample_rate as f32 * 1000.0) as u32;
         drop(cfg);
         Self {
-            gate,
             config,
             vad,
             verifier,
+            silence_ms: 0,
+            frame_ms,
             enrollment_ecapa,
             verification_buffer: VecDeque::with_capacity(verification_window_samples),
             verification_window_samples,
@@ -130,43 +134,50 @@ impl Processor {
     fn process_frame(&mut self, frame: &[f32]) -> Result<Vec<f32>> {
         let input_level = crate::audio::rms(frame);
 
-        // Read live config (may change at runtime via Settings UI).
-        let cfg = self.config.read();
-        self.gate.set_hold_time(cfg.gate.hold_time_ms);
-        let vad_threshold = cfg.vad.threshold;
-        drop(cfg);
-
         // Stage 1: VAD
         let speech_probability = self.vad.process(frame)?;
-        let vad_result = VadResult {
-            speech_probability,
-            is_speech: speech_probability >= vad_threshold,
-        };
 
         // Stage 2: Speaker verification — accumulate only voiced frames.
-        // Buffer is never cleared — sliding window (50% drain) naturally
-        // flushes old audio. Silence frames are skipped to keep the buffer
-        // dense with speech, improving embedding quality.
-        if vad_result.is_speech {
+        let vad_threshold = self.config.read().vad.threshold;
+        let is_speech = speech_probability >= vad_threshold;
+        if is_speech {
+            self.silence_ms = 0;
             self.verification_buffer.extend(frame.iter());
+        } else {
+            self.silence_ms = self.silence_ms.saturating_add(self.frame_ms);
         }
         self.submit_verification_window();
 
-        // Stage 3: Gate mode decides open/closed (reads latest result from verifier)
+        // Stage 3: GateMode makes the full decision.
         let ver_result = self.verifier.result();
         let cfg = self.config.read();
-        let verification = VerificationState {
-            is_speech: vad_result.is_speech,
+        let gate_input = GateInput {
+            speech_probability,
+            vad_threshold,
             verified: self.verifier.has_verified(),
+            verification_ready: self.verification_buffer.len() >= self.verification_window_samples,
             similarity: ver_result.map(|r| r.similarity),
-            threshold: cfg.speaker.similarity_threshold,
+            similarity_threshold: cfg.speaker.similarity_threshold,
             has_profile: self.verifier.has_profile(),
+            hold_time_ms: cfg.gate.hold_time_ms,
+            silence_ms: self.silence_ms,
         };
-        let is_owner = cfg.gate.mode.should_open(&verification);
+        let gate_open = cfg.gate.mode.should_open(&gate_input);
         drop(cfg);
-        let similarity = ver_result.map(|r| r.similarity).unwrap_or(0.0);
 
-        let state = self.gate.update(vad_result.is_speech, is_owner);
+        let similarity = ver_result.map(|r| r.similarity).unwrap_or(0.0);
+        let vad_result = VadResult { speech_probability, is_speech };
+
+        // Derive gate state for telemetry display.
+        let state = if is_speech && gate_open {
+            GateState::MyVoice
+        } else if is_speech && !gate_open {
+            GateState::OtherVoice
+        } else if gate_open {
+            GateState::Trailing
+        } else {
+            GateState::Silent
+        };
 
         // Update telemetry for UI
         {
@@ -175,7 +186,7 @@ impl Processor {
             t.input_level = input_level;
             t.vad_probability = vad_result.speech_probability;
             t.speaker_similarity = similarity;
-            t.gate_open = state.is_open();
+            t.gate_open = gate_open;
         }
 
         // Enrollment: feed audio frames when recording
@@ -194,7 +205,7 @@ impl Processor {
             t.enrollment_speech_secs = secs;
         }
 
-        let output = if state.is_open() {
+        let output = if gate_open {
             frame.to_vec()
         } else {
             vec![0.0; frame.len()]
