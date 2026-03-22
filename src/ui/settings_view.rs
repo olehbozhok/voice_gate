@@ -50,15 +50,9 @@ pub fn show(ui: &mut Ui, config: &mut Config) -> bool {
     ui.add_space(8.0);
     ui.group(|ui| {
         ui.label(RichText::new("Runtime").strong());
-        ui.label(format!("Inference backend: {}", crate::backend::backend_name()));
-        #[cfg(has_silero_vad)]
-        ui.label("Silero VAD: compiled (Burn native)");
-        #[cfg(not(has_silero_vad))]
-        ui.label("Silero VAD: NOT compiled (energy fallback)");
-        #[cfg(has_ecapa_tdnn)]
-        ui.label("ECAPA-TDNN: compiled (Burn native)");
-        #[cfg(not(has_ecapa_tdnn))]
-        ui.label("ECAPA-TDNN: NOT compiled (speaker verification disabled)");
+        ui.label("Inference: tract (CPU, pure Rust)");
+        ui.label("Silero VAD: loaded from models/silero_vad.onnx");
+        ui.label("ECAPA-TDNN: loaded from models/ecapa_tdnn.onnx");
     });
 
     changed

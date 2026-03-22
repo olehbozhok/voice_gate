@@ -51,9 +51,8 @@ pub fn show(ui: &mut Ui, telemetry: &Arc<RwLock<PipelineTelemetry>>, is_running:
         }
     });
 
-    // Backend info
     ui.add_space(8.0);
-    ui.label(RichText::new(format!("Backend: {}", crate::backend::backend_name())).weak().small());
+    ui.label(RichText::new("Inference: tract (CPU)").weak().small());
 
     // Details
     egui::CollapsingHeader::new("Details").show(ui, |ui| {
