@@ -2,6 +2,7 @@
 
 use std::collections::VecDeque;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
@@ -13,6 +14,10 @@ use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::profile::VoiceProfile;
 use crate::vad::silero::SileroVad;
 use super::state_machine::{GateState, GateStateMachine};
+use super::recorder::TestRecorder;
+
+/// Duration of the speaker verification sliding window in seconds.
+const VERIFICATION_WINDOW_SECS: f32 = 1.5;
 
 /// Telemetry snapshot shared with the UI thread.
 #[derive(Debug, Clone)]
@@ -40,6 +45,8 @@ pub struct Processor {
     verification_buffer: VecDeque<f32>,
     verification_window_samples: usize,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
+    recording_flag: Arc<AtomicBool>,
+    recorder: Option<TestRecorder>,
 }
 
 impl Processor {
@@ -49,14 +56,17 @@ impl Processor {
         ecapa: EcapaTdnn,
         profile: Option<VoiceProfile>,
         telemetry: Arc<RwLock<PipelineTelemetry>>,
+        recording_flag: Arc<AtomicBool>,
     ) -> Self {
-        let verification_window_samples = (1.5 * config.audio.sample_rate as f32) as usize;
+        let verification_window_samples = (VERIFICATION_WINDOW_SECS * config.audio.sample_rate as f32) as usize;
         Self {
             gate: GateStateMachine::new(config.gate.hold_time_ms),
             config, vad, ecapa, profile,
             verification_buffer: VecDeque::with_capacity(verification_window_samples),
             verification_window_samples,
             telemetry,
+            recording_flag,
+            recorder: None,
         }
     }
 
@@ -102,11 +112,17 @@ impl Processor {
             t.gate_open = state.is_open();
         }
 
-        if state.is_open() {
-            Ok(frame.to_vec())
+        let output = if state.is_open() {
+            frame.to_vec()
         } else {
-            Ok(vec![0.0; frame.len()])
-        }
+            vec![0.0; frame.len()]
+        };
+
+        // Recording
+        let should_record = self.recording_flag.load(Ordering::Relaxed);
+        self.update_recording(should_record, frame, &output);
+
+        Ok(output)
     }
 
     fn run_speaker_verification(&mut self, frame: &[f32]) -> (bool, f32) {
@@ -150,5 +166,44 @@ impl Processor {
         self.vad.set_threshold(config.vad.threshold);
         self.gate.set_hold_time(config.gate.hold_time_ms);
         self.config.speaker.similarity_threshold = config.speaker.similarity_threshold;
+    }
+
+    /// Handle recording state transitions and write frames.
+    fn update_recording(&mut self, should_record: bool, original: &[f32], gated: &[f32]) {
+        match (self.recorder.is_some(), should_record) {
+            // Start recording
+            (false, true) => {
+                match TestRecorder::new() {
+                    Ok(rec) => self.recorder = Some(rec),
+                    Err(e) => {
+                        log::error!("Failed to start recording: {}", e);
+                        self.recording_flag.store(false, Ordering::Relaxed);
+                    }
+                }
+            }
+            // Stop recording
+            (true, false) => {
+                if let Some(rec) = self.recorder.take() {
+                    if let Err(e) = rec.finish() {
+                        log::error!("Failed to finalize recording: {}", e);
+                    }
+                }
+            }
+            _ => {}
+        }
+
+        // Write frames if recording
+        if let Some(ref mut rec) = self.recorder {
+            if let Err(e) = rec.write_original(original) {
+                log::warn!("Recording write error: {}", e);
+                self.recorder = None;
+                self.recording_flag.store(false, Ordering::Relaxed);
+            }
+            if let Err(e) = rec.write_gated(gated) {
+                log::warn!("Recording write error: {}", e);
+                self.recorder = None;
+                self.recording_flag.store(false, Ordering::Relaxed);
+            }
+        }
     }
 }
