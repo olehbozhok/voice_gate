@@ -5,49 +5,24 @@ edition = "2021"
 authors = ["Your Name <your@email.com>"]
 description = """
 Voice Gate — intelligent microphone gate that activates only for *your* voice.
-Built with Burn deep learning framework (pure Rust, zero C++ dependencies).
 Silero VAD for voice detection + ECAPA-TDNN for speaker verification.
 """
 license = "MIT"
 readme = "README.md"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Feature flags — select the Burn backend for inference
-# ─────────────────────────────────────────────────────────────────────────────
-#   cargo build --release                   → CPU (NdArray, pure Rust)
-#   cargo build --release --features wgpu   → GPU via Vulkan/Metal/DX12
-#   cargo build --release --features cuda   → NVIDIA CUDA
-# ─────────────────────────────────────────────────────────────────────────────
-[features]
-default = ["cpu"]
-cpu  = ["burn/ndarray"]
-wgpu = ["burn/wgpu"]
-cuda = ["burn/cuda"]
-
-# ── Build strictness ─────────────────────────────────────────────────────────
-# By default the build is STRICT: missing or broken ONNX models cause a
-# compile error with a clear diagnostic message. Enable `dev` to allow
-# building without models (energy-based VAD fallback, no speaker verification).
-#
-#   cargo build --release                    → strict (requires models/)
-#   cargo build --release --features dev     → lenient (fallbacks enabled)
-dev = []
-
 [dependencies]
-# ── Burn Deep Learning Framework ─────────────────────────────────────────────
-# Models are compiled from ONNX into native Rust at build time.
-# No ONNX Runtime, no C++ bindings, no shared libraries.
-burn = { version = "0.20", default-features = false, features = ["std"] }
+# ── ONNX Inference (pure Rust) ─────────────────────────────────────────
+tract-onnx = "0.22"
 
-# ── Audio I/O ────────────────────────────────────────────────────────────────
+# ── Audio I/O ──────────────────────────────────────────────────────────
 cpal = "0.15"
 hound = "3.5"
 
-# ── GUI ──────────────────────────────────────────────────────────────────────
+# ── GUI ──────────────────────────────────────────────────────────────
 eframe = "0.31"
 egui = "0.31"
 
-# ── Utilities ────────────────────────────────────────────────────────────────
+# ── Utilities ──────────────────────────────────────────────────────────
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
@@ -56,10 +31,6 @@ log = "0.4"
 env_logger = "0.11"
 crossbeam-channel = "0.5"
 parking_lot = "0.12"
-
-# ── Build-time ONNX → Burn code generation ───────────────────────────────────
-[build-dependencies]
-burn-import = { version = "0.20", default-features = false, features = ["onnx"] }
 
 [profile.release]
 opt-level = 3
