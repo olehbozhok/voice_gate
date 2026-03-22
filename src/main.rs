@@ -1,17 +1,10 @@
 //! Voice Gate — entry point.
-//!
-//! ```bash
-//! cargo run --release                   # CPU (NdArray, pure Rust)
-//! cargo run --release --features wgpu   # GPU (Vulkan/Metal/DX12)
-//! cargo run --release --features cuda   # NVIDIA CUDA
-//! ```
 
 mod app;
 mod audio;
-mod backend;
 mod config;
 mod error;
-mod model;
+mod inference;
 mod pipeline;
 mod speaker;
 mod ui;
@@ -23,7 +16,6 @@ fn main() -> eframe::Result<()> {
         .init();
 
     log::info!("Voice Gate v{}", env!("CARGO_PKG_VERSION"));
-    log::info!("Backend: {}", backend::backend_name());
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
