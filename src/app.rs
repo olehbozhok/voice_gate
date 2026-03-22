@@ -144,7 +144,9 @@ impl VoiceGateApp {
 
 impl eframe::App for VoiceGateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        if self.is_running { ctx.request_repaint(); }
+        if self.is_running {
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        }
 
         // Nav bar
         egui::TopBottomPanel::top("nav").show(ctx, |ui| {
