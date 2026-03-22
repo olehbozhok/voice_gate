@@ -1,22 +1,23 @@
-//! ONNX inference wrapper — hides the tract runtime behind a stable API.
+//! ONNX inference wrapper — hides ort (ONNX Runtime) behind a stable API.
 //!
-//! To swap the inference backend (e.g. to ort), change only this file.
-//! No other module imports tract types directly.
+//! To swap the inference backend, change only this file.
+//! No other module imports ort types directly.
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use tract_onnx::prelude::*;
+use ort::session::Session;
 
-/// Opaque wrapper over an optimized ONNX model.
+/// Opaque wrapper over an ONNX Runtime session.
 pub struct OnnxModel {
-    plan: TypedSimplePlan<TypedModel>,
+    session: Session,
 }
 
 /// Opaque handle for stateful model data (e.g. LSTM hidden/cell state).
-/// Passed back into subsequent inference calls without copying.
+/// Stores an N-dimensional array with its shape preserved for round-tripping.
 pub struct ModelState {
-    inner: Tensor,
+    data: Vec<f32>,
+    shape: Vec<usize>,
 }
 
 /// Typed model input — no framework-specific types exposed.
@@ -29,113 +30,91 @@ pub enum Input {
     State(ModelState),
 }
 
-/// Element type for input fact declarations.
+/// Element type for input fact declarations (unused with ort, kept for API compat).
 #[derive(Debug, Clone, Copy)]
 pub enum DType {
     F32,
     I64,
 }
 
-/// Describes the expected shape, type, or constant value of a model input.
-/// Used to resolve dynamic shapes and conditional branches before optimization.
+/// Describes the expected shape and type of a model input.
+/// With ort, input facts are not needed (ort handles dynamic shapes natively),
+/// but kept in the API for documentation and forward compatibility.
 pub enum InputFact {
-    /// Input with a known shape and type. Use `0` in shape for dynamic dimensions.
+    /// Input with a known shape and type.
     Shape { shape: Vec<usize>, dtype: DType },
-    /// Input with a fixed constant value, baked into the model at load time.
-    /// Enables the optimizer to resolve conditional branches (e.g. If nodes).
+    /// Constant i64 scalar.
     ConstI64(i64),
 }
 
 /// Opaque model output with typed accessors.
 pub struct Output {
-    inner: Tensor,
+    data: Vec<f32>,
 }
 
 // ── OnnxModel ────────────────────────────────────────────────────────────
 
 impl OnnxModel {
-    /// Load an ONNX model from disk, optimize the graph, and prepare for
-    /// inference. Use this when the model has fully determined input shapes.
+    /// Load an ONNX model from disk.
     pub fn load(path: &Path) -> Result<Self> {
-        Self::load_with_inputs(path, &[])
+        let session = Session::builder()
+            .context("failed to create ONNX Runtime session builder")?
+            .commit_from_file(path)
+            .with_context(|| format!("failed to load ONNX model: {}", path.display()))?;
+        Ok(Self { session })
     }
 
-    /// Load an ONNX model and set explicit input facts for models with
-    /// dynamic or undetermined input shapes. Each `InputFact` specifies the
-    /// shape and element type of the corresponding model input (by position).
-    /// A dimension of `0` in the shape means "dynamic" (variable length).
-    pub fn load_with_inputs(path: &Path, input_facts: &[InputFact]) -> Result<Self> {
-        let mut model = tract_onnx::onnx()
-            .model_for_path(path)
-            .with_context(|| format!("failed to load ONNX model: {}", path.display()))?;
-
-        let symbols = SymbolScope::default();
-        for (i, fact) in input_facts.iter().enumerate() {
-            match fact {
-                InputFact::Shape { shape, dtype } => {
-                    let dims: Vec<TDim> = shape.iter().enumerate().map(|(dim_idx, &d)| {
-                        if d == 0 {
-                            let name = format!("d{}_{}", i, dim_idx);
-                            symbols.sym(&name).into()
-                        } else {
-                            d.into()
-                        }
-                    }).collect();
-                    let dt = match dtype {
-                        DType::F32 => f32::datum_type(),
-                        DType::I64 => i64::datum_type(),
-                    };
-                    model.set_input_fact(i, InferenceFact::dt_shape(dt, &dims))?;
-                }
-                InputFact::ConstI64(value) => {
-                    let tensor = Tensor::from(tract_ndarray::arr0(*value));
-                    model.set_input_fact(i, InferenceFact::from(tensor))?;
-                }
-            }
-        }
-
-        let plan = model
-            .into_optimized()
-            .with_context(|| format!("failed to optimize model: {}", path.display()))?
-            .into_runnable()
-            .with_context(|| format!("failed to prepare model: {}", path.display()))?;
-        Ok(Self { plan })
+    /// Load an ONNX model with input fact declarations.
+    /// With ort, input facts are ignored — ort resolves shapes at runtime.
+    pub fn load_with_inputs(path: &Path, _input_facts: &[InputFact]) -> Result<Self> {
+        Self::load(path)
     }
 
     /// Run inference with the given inputs.
-    pub fn run(&self, inputs: Vec<Input>) -> Result<Vec<Output>> {
-        let tv: TVec<TValue> = inputs
+    pub fn run(&mut self, inputs: Vec<Input>) -> Result<Vec<Output>> {
+        let ort_inputs: Vec<ort::session::SessionInputValue<'_>> = inputs
             .into_iter()
-            .map(|inp| inp.into_tvalue())
+            .map(|inp| inp.into_session_input())
             .collect::<Result<_>>()?;
-        let outputs = self.plan.run(tv)?;
-        Ok(outputs
-            .into_iter()
-            .map(|v: TValue| Output { inner: v.into_tensor() })
-            .collect())
+
+        let outputs = self.session.run(ort_inputs.as_slice())
+            .context("inference failed")?;
+
+        outputs
+            .values()
+            .map(|value| {
+                let (_shape, data) = value.try_extract_tensor::<f32>()
+                    .context("failed to extract f32 tensor from output")?;
+                let data: Vec<f32> = data.iter().copied().collect();
+                Ok(Output { data })
+            })
+            .collect()
     }
 }
 
 // ── Input ────────────────────────────────────────────────────────────────
 
 impl Input {
-    fn into_tvalue(self) -> Result<TValue> {
+    fn into_session_input(self) -> Result<ort::session::SessionInputValue<'static>> {
         match self {
             Input::F32 { shape, data } => {
-                let tensor = tract_ndarray::Array::from_shape_vec(
-                    tract_ndarray::IxDyn(&shape),
-                    data,
-                )?;
-                Ok(Tensor::from(tensor).into())
+                let shape_i64: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
+                let value = ort::value::Tensor::from_array((shape_i64, data.into_boxed_slice()))
+                    .context("failed to create f32 tensor")?;
+                Ok(value.into())
             }
             Input::I64 { shape, data } => {
-                let tensor = tract_ndarray::Array::from_shape_vec(
-                    tract_ndarray::IxDyn(&shape),
-                    data,
-                )?;
-                Ok(Tensor::from(tensor).into())
+                let shape_i64: Vec<i64> = shape.iter().map(|&d| d as i64).collect();
+                let value = ort::value::Tensor::from_array((shape_i64, data.into_boxed_slice()))
+                    .context("failed to create i64 tensor")?;
+                Ok(value.into())
             }
-            Input::State(state) => Ok(state.inner.into()),
+            Input::State(state) => {
+                let shape_i64: Vec<i64> = state.shape.iter().map(|&d| d as i64).collect();
+                let value = ort::value::Tensor::from_array((shape_i64, state.data.into_boxed_slice()))
+                    .context("failed to create state tensor")?;
+                Ok(value.into())
+            }
         }
     }
 }
@@ -145,17 +124,24 @@ impl Input {
 impl Output {
     /// Extract a single f32 scalar from the output.
     pub fn to_scalar_f32(&self) -> Result<f32> {
-        Ok(*self.inner.to_scalar::<f32>()?)
+        self.data.first().copied()
+            .context("output tensor is empty")
     }
 
     /// Extract the output as a flat Vec<f32>.
     pub fn to_f32_vec(&self) -> Result<Vec<f32>> {
-        Ok(self.inner.as_slice::<f32>()?.to_vec())
+        Ok(self.data.clone())
     }
 
-    /// Convert this output into an opaque ModelState for round-tripping.
+    /// Convert this output into an opaque ModelState with explicit shape.
+    pub fn into_state_with_shape(self, shape: Vec<usize>) -> ModelState {
+        ModelState { data: self.data, shape }
+    }
+
+    /// Convert this output into an opaque ModelState (1-D shape).
     pub fn into_state(self) -> ModelState {
-        ModelState { inner: self.inner }
+        let len = self.data.len();
+        ModelState { data: self.data, shape: vec![len] }
     }
 }
 
@@ -164,11 +150,10 @@ impl Output {
 impl ModelState {
     /// Create a zero-filled f32 state tensor with the given shape.
     pub fn zeros_f32(shape: &[usize]) -> Self {
-        let tensor = tract_ndarray::Array::<f32, _>::zeros(
-            tract_ndarray::IxDyn(shape),
-        );
+        let len: usize = shape.iter().product();
         Self {
-            inner: Tensor::from(tensor),
+            data: vec![0.0; len],
+            shape: shape.to_vec(),
         }
     }
 }

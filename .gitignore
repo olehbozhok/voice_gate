@@ -4,3 +4,5 @@ profiles/*.json
 config.json
 .claude
 Cargo.lock
+.venv
+*.pyc

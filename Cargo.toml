@@ -11,8 +11,10 @@ license = "MIT"
 readme = "README.md"
 
 [dependencies]
-# ── ONNX Inference (pure Rust) ─────────────────────────────────────────
-tract-onnx = "0.22"
+# ── ONNX Inference ────────────────────────────────────────────────────
+# ort bundles ONNX Runtime as a static library — no separate install needed.
+ort = "2.0.0-rc.12"
+ndarray = "0.16"
 
 # ── Audio I/O ──────────────────────────────────────────────────────────
 cpal = "0.15"
