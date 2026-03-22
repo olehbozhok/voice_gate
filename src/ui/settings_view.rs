@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use egui::{RichText, Ui};
 use parking_lot::RwLock;
 
-use crate::config::{Config, GateMode};
+use crate::config::{Config, GateMode, OptimisticConfig};
 
 /// Minimum interval between device list refreshes.
 const DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
@@ -156,8 +156,10 @@ pub fn show(
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("Verification mode:");
-            if ui.selectable_label(config.gate.mode == GateMode::Optimistic, "Optimistic").clicked() {
-                config.gate.mode = GateMode::Optimistic; changed = true;
+            let is_optimistic = matches!(config.gate.mode, GateMode::Optimistic(_));
+            if ui.selectable_label(is_optimistic, "Optimistic").clicked() && !is_optimistic {
+                config.gate.mode = GateMode::Optimistic(OptimisticConfig::default());
+                changed = true;
             }
             if ui.selectable_label(config.gate.mode == GateMode::Strict, "Strict").clicked() {
                 config.gate.mode = GateMode::Strict; changed = true;
@@ -167,11 +169,25 @@ pub fn show(
             }
         });
         let mode_hint = match config.gate.mode {
-            GateMode::Optimistic => "Opens instantly, closes if not owner. Best for calls.",
+            GateMode::Optimistic(_) => "Opens instantly, closes if not owner. Best for calls.",
             GateMode::Strict => "Stays closed until speaker verified. Best for recording.",
             GateMode::VadOnly => "Passes all speech, no speaker verification.",
         };
         ui.label(egui::RichText::new(mode_hint).small().weak());
+
+        // Optimistic-specific settings
+        if let GateMode::Optimistic(ref mut opt_cfg) = config.gate.mode {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                ui.label("Verification settle (ms):")
+                    .on_hover_text("Grace period before trusting speaker verification.\nDuring this time the gate stays open regardless of result.");
+                let mut settle = opt_cfg.verification_settle_ms as f32;
+                if ui.add(egui::Slider::new(&mut settle, 0.0..=2000.0).step_by(50.0)).changed() {
+                    opt_cfg.verification_settle_ms = settle as u32;
+                    changed = true;
+                }
+            });
+        }
     });
 
     ui.add_space(8.0);

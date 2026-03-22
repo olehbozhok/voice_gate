@@ -64,7 +64,24 @@ pub struct SpeakerConfig {
 
 /// Gate operating mode — each variant implements a different tradeoff
 /// between latency (clipping the owner) and leakage (passing other voices).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Configuration specific to [`GateMode::Optimistic`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OptimisticConfig {
+    /// Grace period (ms) before trusting speaker verification.
+    /// While similarity is available for less than this duration, the gate
+    /// stays open regardless of the verification result.
+    pub verification_settle_ms: u32,
+}
+
+impl Default for OptimisticConfig {
+    fn default() -> Self {
+        Self {
+            verification_settle_ms: 500,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GateMode {
     /// **"Open first, verify later"** (recommended).
     ///
@@ -76,8 +93,7 @@ pub enum GateMode {
     /// - Other voices: may leak for ~0.5–1s until verification completes.
     /// - Best for: calls, meetings, streaming — where clipping yourself
     ///   is worse than briefly hearing someone else.
-    #[default]
-    Optimistic,
+    Optimistic(OptimisticConfig),
 
     /// **"Verify first, then open"** (strict).
     ///
@@ -99,6 +115,12 @@ pub enum GateMode {
     VadOnly,
 }
 
+impl Default for GateMode {
+    fn default() -> Self {
+        Self::Optimistic(OptimisticConfig::default())
+    }
+}
+
 impl GateMode {
     /// Evaluate the gate decision for a single audio frame.
     ///
@@ -106,7 +128,7 @@ impl GateMode {
     /// making it trivial to test and reason about.
     pub fn evaluate(self, input: &GateInput) -> GateDecision {
         match self {
-            GateMode::Optimistic => evaluate_optimistic(input),
+            GateMode::Optimistic(cfg) => evaluate_optimistic(input, &cfg),
             GateMode::Strict => evaluate_strict(input),
             GateMode::VadOnly => evaluate_vad_only(input),
         }
@@ -136,6 +158,8 @@ pub struct GateInput {
     pub hold_time_ms: u32,
     /// Duration of continuous silence in milliseconds.
     pub silence_ms: u32,
+    /// How long similarity has been available (ms since first verification).
+    pub similarity_available_ms: u32,
 }
 
 impl GateInput {
@@ -206,7 +230,7 @@ impl GateDecision {
 /// | yes     | no        | —      | yes      | **pass** ←  |
 /// | yes     | yes       | yes    | yes      | pass        |
 /// | yes     | yes       | no     | yes      | **block**   |
-fn evaluate_optimistic(input: &GateInput) -> GateDecision {
+fn evaluate_optimistic(input: &GateInput, cfg: &OptimisticConfig) -> GateDecision {
     // ── No speech ───────────────────────────────────────────────
     if !input.is_speech() {
         if input.in_hold_window() {
@@ -225,6 +249,10 @@ fn evaluate_optimistic(input: &GateInput) -> GateDecision {
     }
 
     if input.verified {
+        // Similarity just appeared — wait for it to settle before trusting.
+        if input.similarity_available_ms < cfg.verification_settle_ms {
+            return GateDecision::pass();
+        }
         return if input.is_owner() {
             GateDecision::pass()
         } else {
@@ -290,6 +318,7 @@ pub struct GateConfig {
     pub mode: GateMode,
 }
 
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -308,7 +337,7 @@ impl Default for Config {
             gate: GateConfig {
                 hold_time_ms: 300,
                 pre_buffer_ms: 100,
-                mode: GateMode::Optimistic,
+                mode: GateMode::default(),
             },
             profiles_dir: default_profiles_dir(),
             models_dir: default_models_dir(),
@@ -317,6 +346,11 @@ impl Default for Config {
 }
 
 impl Config {
+    /// Pre-buffer size in samples, derived from `gate.pre_buffer_ms`.
+    pub fn pre_buffer_samples(&self) -> usize {
+        (self.gate.pre_buffer_ms as usize * self.audio.sample_rate as usize) / 1000
+    }
+
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {

@@ -77,6 +77,14 @@ pub struct Processor {
     frame_ms: u32,
     verification_buffer: VecDeque<f32>,
     verification_window_samples: usize,
+    /// Ring buffer holding recent audio for pre-buffer feature.
+    /// When gate opens, these samples are flushed first so word onsets
+    /// captured just before the gate opened are not lost.
+    pre_buffer: VecDeque<f32>,
+    /// Whether the gate was open on the previous frame (for edge detection).
+    prev_gate_open: bool,
+    /// How long similarity has been available (ms since first verification).
+    similarity_available_ms: u32,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
     recording_flag: Arc<AtomicBool>,
     recorder: Option<TestRecorder>,
@@ -115,6 +123,9 @@ impl Processor {
             enrollment_ecapa,
             verification_buffer: VecDeque::with_capacity(verification_window_samples),
             verification_window_samples,
+            pre_buffer: VecDeque::new(),
+            prev_gate_open: false,
+            similarity_available_ms: 0,
             telemetry,
             recording_flag,
             recorder: None,
@@ -157,6 +168,10 @@ impl Processor {
         let ver_result = self.verifier.result();
         let similarity = ver_result.as_ref().map(|r| r.similarity).unwrap_or(0.0);
         let matched_profile = ver_result.as_ref().and_then(|r| r.matched_profile.clone());
+        // Track how long similarity has been available.
+        if self.verifier.has_verified() {
+            self.similarity_available_ms = self.similarity_available_ms.saturating_add(self.frame_ms);
+        }
         let cfg = self.config.read();
         let gate_input = GateInput {
             speech_probability,
@@ -167,6 +182,7 @@ impl Processor {
             has_profile: self.verifier.has_profile(),
             hold_time_ms: cfg.gate.hold_time_ms,
             silence_ms: self.silence_ms,
+            similarity_available_ms: self.similarity_available_ms,
         };
         let decision = cfg.gate.mode.evaluate(&gate_input);
         drop(cfg);
@@ -174,6 +190,7 @@ impl Processor {
         if decision.flush_verification {
             self.verification_buffer.clear();
             self.verifier.reset();
+            self.similarity_available_ms = 0;
         }
 
         let gate_open = decision.pass_audio;
@@ -220,11 +237,29 @@ impl Processor {
             t.enrollment_speech_secs = secs;
         }
 
+        // Pre-buffer: maintain a ring buffer of recent audio.
+        // Read max size from shared config each frame — no restart needed.
+        let pre_buffer_samples = self.config.read().pre_buffer_samples();
+        // Always push current frame into pre-buffer.
+        self.pre_buffer.extend(frame.iter());
+        // Trim to configured size (handles setting changes on the fly).
+        while self.pre_buffer.len() > pre_buffer_samples {
+            self.pre_buffer.pop_front();
+        }
+
         let output = if gate_open {
-            frame.to_vec()
+            if !self.prev_gate_open && pre_buffer_samples > 0 {
+                // Gate just opened — flush pre-buffer then append current frame.
+                let mut out: Vec<f32> = self.pre_buffer.drain(..).collect();
+                // Current frame is already in pre_buffer, so out contains it.
+                out
+            } else {
+                frame.to_vec()
+            }
         } else {
             vec![0.0; frame.len()]
         };
+        self.prev_gate_open = gate_open;
 
         // Recording
         let should_record = self.recording_flag.load(Ordering::Relaxed);
