@@ -33,10 +33,28 @@ pub struct SpeakerConfig {
     pub min_enrollment_seconds: f32,
 }
 
+/// How the gate decides when to open relative to speaker verification.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum GateMode {
+    /// Open immediately on speech, close if verification fails.
+    /// Lowest latency, brief leak possible for non-owner speech.
+    Optimistic,
+    /// Keep closed until speaker verification confirms the owner.
+    /// Higher latency (~1.5s), no leak for non-owner speech.
+    Strict,
+}
+
+impl Default for GateMode {
+    fn default() -> Self { Self::Optimistic }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateConfig {
     pub hold_time_ms: u32,
     pub pre_buffer_ms: u32,
+    /// Controls whether the gate opens before or after speaker verification.
+    #[serde(default)]
+    pub mode: GateMode,
 }
 
 impl Default for Config {
@@ -48,7 +66,7 @@ impl Default for Config {
             },
             vad: VadConfig { threshold: 0.5 },
             speaker: SpeakerConfig { similarity_threshold: 0.70, min_enrollment_seconds: 10.0 },
-            gate: GateConfig { hold_time_ms: 300, pre_buffer_ms: 100 },
+            gate: GateConfig { hold_time_ms: 300, pre_buffer_ms: 100, mode: GateMode::Optimistic },
             profiles_dir: PathBuf::from("profiles"),
         }
     }

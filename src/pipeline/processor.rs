@@ -8,7 +8,7 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::RwLock;
 
-use crate::config::Config;
+use crate::config::{Config, GateMode};
 use crate::speaker::cosine_similarity;
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
@@ -174,9 +174,14 @@ impl Processor {
         self.verification_buffer.extend(frame.iter());
 
         if self.verification_buffer.len() < self.verification_window_samples {
-            let prev_sim = self.telemetry.read().speaker_similarity;
-            let threshold = self.config.speaker.similarity_threshold;
-            return (prev_sim >= threshold, prev_sim);
+            return match self.config.gate.mode {
+                // Optimistic: assume owner while accumulating audio.
+                // Gate opens immediately, closes later if not the owner.
+                GateMode::Optimistic => (true, 1.0),
+                // Strict: don't confirm owner until we have enough audio.
+                // Gate stays closed until first verification succeeds.
+                GateMode::Strict => (false, 0.0),
+            };
         }
 
         let window: Vec<f32> = self.verification_buffer.iter().copied().collect();

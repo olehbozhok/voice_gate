@@ -1,7 +1,7 @@
 //! Settings — threshold sliders, backend info.
 
 use egui::{RichText, Ui};
-use crate::config::Config;
+use crate::config::{Config, GateMode};
 
 /// Returns true if anything changed.
 pub fn show(ui: &mut Ui, config: &mut Config) -> bool {
@@ -45,6 +45,21 @@ pub fn show(ui: &mut Ui, config: &mut Config) -> bool {
                 config.gate.pre_buffer_ms = pre as u32; changed = true;
             }
         });
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label("Verification mode:");
+            if ui.selectable_label(config.gate.mode == GateMode::Optimistic, "Optimistic").clicked() {
+                config.gate.mode = GateMode::Optimistic; changed = true;
+            }
+            if ui.selectable_label(config.gate.mode == GateMode::Strict, "Strict").clicked() {
+                config.gate.mode = GateMode::Strict; changed = true;
+            }
+        });
+        let mode_hint = match config.gate.mode {
+            GateMode::Optimistic => "Opens instantly, closes if not owner (~1.5s check).",
+            GateMode::Strict => "Stays closed until speaker verified (~1.5s delay).",
+        };
+        ui.label(egui::RichText::new(mode_hint).small().weak());
     });
 
     ui.add_space(8.0);
