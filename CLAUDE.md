@@ -16,6 +16,7 @@ Write code as a highly qualified senior engineer with years of experience. Every
 - Prefer concrete types over trait objects unless polymorphism is needed.
 - Keep functions short — if a function needs a comment block explaining its sections, split it.
 - Use `log` crate macros for diagnostics (`info!`, `warn!`, `error!`, `trace!`).
+- **No magic numbers.** All constants must be declared as `const` with a doc comment explaining the value. Example: `/// Pipeline sample rate expected by ML models (Silero VAD, ECAPA-TDNN). const PIPELINE_SAMPLE_RATE: u32 = 16_000;`
 
 ## Project Structure
 
