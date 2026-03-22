@@ -1,14 +1,13 @@
 //! Top-level application — eframe App implementation.
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{bounded, Sender};
 use parking_lot::RwLock;
 
-use crate::backend::AppBackend;
 use crate::config::Config;
 use crate::pipeline::processor::{PipelineTelemetry, Processor};
 use crate::speaker::embedding::EcapaTdnn;
@@ -79,10 +78,14 @@ impl VoiceGateApp {
         let (output_tx, output_rx) = bounded::<Vec<f32>>(64);
         let output_stream = crate::audio::output::start_output(&output_dev, sr, output_rx)?;
 
-        // ML Models (Burn — compiled at build time, no runtime deps)
-        let device = Default::default();
-        let vad = SileroVad::<AppBackend>::new(self.config.vad.threshold, &device)?;
-        let ecapa = EcapaTdnn::<AppBackend>::new(&device)?;
+        // ML Models (tract — loaded from ONNX at runtime)
+        let vad = SileroVad::new(
+            self.config.vad.threshold,
+            Path::new("models/silero_vad.onnx"),
+        )?;
+        let ecapa = EcapaTdnn::new(
+            Path::new("models/ecapa_tdnn.onnx"),
+        )?;
 
         // Processor thread
         let telemetry = self.telemetry.clone();
