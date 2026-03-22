@@ -10,13 +10,13 @@ use tract_onnx::prelude::*;
 
 /// Opaque wrapper over an optimized ONNX model.
 pub struct OnnxModel {
-    plan: TypedRunnableModel<TypedFact>,
+    plan: TypedSimplePlan<TypedModel>,
 }
 
 /// Opaque handle for stateful model data (e.g. LSTM hidden/cell state).
 /// Passed back into subsequent inference calls without copying.
 pub struct ModelState {
-    inner: TValue,
+    inner: Tensor,
 }
 
 /// Typed model input — no framework-specific types exposed.
@@ -31,7 +31,7 @@ pub enum Input {
 
 /// Opaque model output with typed accessors.
 pub struct Output {
-    inner: TValue,
+    inner: Tensor,
 }
 
 // ── OnnxModel ────────────────────────────────────────────────────────────
@@ -57,7 +57,10 @@ impl OnnxModel {
             .map(|inp| inp.into_tvalue())
             .collect::<Result<_>>()?;
         let outputs = self.plan.run(tv)?;
-        Ok(outputs.into_iter().map(|v| Output { inner: v }).collect())
+        Ok(outputs
+            .into_iter()
+            .map(|v: TValue| Output { inner: v.into_tensor() })
+            .collect())
     }
 }
 
@@ -80,7 +83,7 @@ impl Input {
                 )?;
                 Ok(Tensor::from(tensor).into())
             }
-            Input::State(state) => Ok(state.inner),
+            Input::State(state) => Ok(state.inner.into()),
         }
     }
 }
@@ -113,7 +116,7 @@ impl ModelState {
             tract_ndarray::IxDyn(shape),
         );
         Self {
-            inner: Tensor::from(tensor).into(),
+            inner: Tensor::from(tensor),
         }
     }
 }
