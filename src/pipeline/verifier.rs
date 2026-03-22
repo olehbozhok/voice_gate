@@ -11,7 +11,7 @@ use crossbeam_channel::{bounded, Sender};
 use parking_lot::RwLock;
 
 use crate::speaker::embedding::EcapaTdnn;
-use crate::speaker::profile::{ProfileStore, VoiceProfile};
+use crate::speaker::profile::ProfileStore;
 
 /// Shared verification result, updated by the verifier thread.
 #[derive(Debug, Clone)]

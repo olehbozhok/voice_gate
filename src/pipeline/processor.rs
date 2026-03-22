@@ -250,7 +250,7 @@ impl Processor {
         let output = if gate_open {
             if !self.prev_gate_open && pre_buffer_samples > 0 {
                 // Gate just opened — flush pre-buffer then append current frame.
-                let mut out: Vec<f32> = self.pre_buffer.drain(..).collect();
+                let out: Vec<f32> = self.pre_buffer.drain(..).collect();
                 // Current frame is already in pre_buffer, so out contains it.
                 out
             } else {

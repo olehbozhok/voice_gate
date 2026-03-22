@@ -14,7 +14,7 @@ use crate::models::{self, DownloadProgress, ModelStatus};
 use crate::pipeline::processor::{EnrollmentCommand, PipelineTelemetry, Processor};
 use crate::pipeline::verifier::SpeakerVerifier;
 use crate::speaker::embedding::EcapaTdnn;
-use crate::speaker::profile::{ProfileStore, VoiceProfile};
+use crate::speaker::profile::ProfileStore;
 use crate::ui::enrollment_view::EnrollmentViewState;
 use crate::ui::model_setup_view::ModelSetupAction;
 use crate::ui::ActiveView;
