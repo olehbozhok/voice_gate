@@ -119,7 +119,7 @@ pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &e
             }
         });
         ui.horizontal(|ui| {
-            ui.label("Pre-buffer (ms):");
+            ui.label("Pre-buffer (ms):").on_hover_text("TODO: not yet implemented. Will add latency to avoid clipping word starts in Strict mode.");
             let mut pre = config.gate.pre_buffer_ms as f32;
             if ui.add(egui::Slider::new(&mut pre, 0.0..=500.0).step_by(25.0)).changed() {
                 config.gate.pre_buffer_ms = pre as u32; changed = true;
@@ -134,10 +134,14 @@ pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &e
             if ui.selectable_label(config.gate.mode == GateMode::Strict, "Strict").clicked() {
                 config.gate.mode = GateMode::Strict; changed = true;
             }
+            if ui.selectable_label(config.gate.mode == GateMode::VadOnly, "VAD Only").clicked() {
+                config.gate.mode = GateMode::VadOnly; changed = true;
+            }
         });
         let mode_hint = match config.gate.mode {
-            GateMode::Optimistic => "Opens instantly, closes if not owner (~1.5s check).",
-            GateMode::Strict => "Stays closed until speaker verified (~1.5s delay).",
+            GateMode::Optimistic => "Opens instantly, closes if not owner. Best for calls.",
+            GateMode::Strict => "Stays closed until speaker verified. Best for recording.",
+            GateMode::VadOnly => "Passes all speech, no speaker verification.",
         };
         ui.label(egui::RichText::new(mode_hint).small().weak());
     });

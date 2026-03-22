@@ -35,32 +35,72 @@ pub struct SpeakerConfig {
     pub min_enrollment_seconds: f32,
 }
 
-/// How the gate decides when to open relative to speaker verification.
-///
-/// Each mode implements [`GateMode::pre_verification_decision`] which determines
-/// what happens when speech is detected but the speaker hasn't been verified yet
-/// (not enough audio accumulated, or verification is still running).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+// ─────────────────────────────────────────────────────────────────────────────
+// Gate mode
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Gate operating mode — each variant implements a different tradeoff
+/// between latency (clipping the owner) and leakage (passing other voices).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GateMode {
-    /// Open the gate immediately when speech is detected, before speaker
-    /// verification completes. If verification later determines the speaker
-    /// is not the owner, the gate closes.
+    /// **"Open first, verify later"** (recommended).
     ///
-    /// Trade-off: lowest latency (instant response), but a non-owner's first
-    /// ~1.5s of speech leaks through until verification kicks in.
+    /// The gate opens instantly when VAD detects speech. Speaker verification
+    /// runs in the background. If verification determines the speaker is NOT
+    /// the owner, the gate closes.
+    ///
+    /// - Owner's voice: **never clipped**.
+    /// - Other voices: may leak for ~0.5–1s until verification completes.
+    /// - Best for: calls, meetings, streaming — where clipping yourself
+    ///   is worse than briefly hearing someone else.
     Optimistic,
 
-    /// Keep the gate closed until speaker verification positively confirms
-    /// the owner. No audio passes until the model has enough data (~1.5s)
-    /// and the embedding matches the enrolled profile.
+    /// **"Verify first, then open"** (strict).
     ///
-    /// Trade-off: no leak for non-owner speech, but the owner experiences
-    /// ~1.5s of silence at the start of each utterance after a long pause.
+    /// The gate stays closed until speaker verification confirms the owner.
+    /// Audio is buffered and retroactively passed if verified.
+    ///
+    /// - Owner's voice: first ~0.5–1s **may be lost** (unless pre-buffered).
+    /// - Other voices: never leak.
+    /// - Best for: recording, security — where leaking others is unacceptable.
     Strict,
+
+    /// **VAD-only gate** (no speaker verification).
+    ///
+    /// Opens when any speech is detected, closes on silence. Useful as a
+    /// baseline or when no voice profile is enrolled.
+    ///
+    /// - All voices pass through.
+    /// - Background noise and silence are gated.
+    VadOnly,
 }
 
+impl GateMode {
+    /// Evaluate the gate decision for a single audio frame.
+    ///
+    /// This is a **pure function** — all state is carried in [`GateInput`],
+    /// making it trivial to test and reason about.
+    pub fn evaluate(self, input: &GateInput) -> GateDecision {
+        match self {
+            GateMode::Optimistic => evaluate_optimistic(input),
+            GateMode::Strict => evaluate_strict(input),
+            GateMode::VadOnly => evaluate_vad_only(input),
+        }
+    }
+}
+
+impl Default for GateMode {
+    fn default() -> Self {
+        Self::Optimistic
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gate input / output
+// ─────────────────────────────────────────────────────────────────────────────
+
 /// All inputs needed for the gate decision, collected by the processor
-/// and passed to [`GateMode::should_open`] each frame.
+/// and passed to [`GateMode::evaluate`] each frame.
 pub struct GateInput {
     /// VAD speech probability for this frame (0.0–1.0).
     pub speech_probability: f32,
@@ -83,17 +123,30 @@ pub struct GateInput {
 }
 
 impl GateInput {
-    /// Whether VAD detects speech in this frame.
-    pub fn is_speech(&self) -> bool {
+    /// Returns `true` if VAD considers the current frame to contain speech.
+    fn is_speech(&self) -> bool {
         self.speech_probability >= self.vad_threshold
     }
 
-    /// Whether the speaker is verified as the owner.
-    pub fn is_owner(&self) -> bool {
-        match (self.verified, self.similarity) {
-            (true, Some(sim)) => sim >= self.similarity_threshold,
-            _ => false,
+    /// Returns `true` if the most recent verification says "owner".
+    fn is_owner(&self) -> bool {
+        match self.similarity {
+            Some(sim) => sim >= self.similarity_threshold,
+            None => false,
         }
+    }
+
+    /// Returns `true` if the most recent verification says "not owner".
+    fn is_rejected(&self) -> bool {
+        match self.similarity {
+            Some(sim) => sim < self.similarity_threshold,
+            None => false,
+        }
+    }
+
+    /// Returns `true` if we're within the hold window after speech ended.
+    fn in_hold_window(&self) -> bool {
+        !self.is_speech() && self.silence_ms <= self.hold_time_ms
     }
 }
 
@@ -106,58 +159,119 @@ pub struct GateDecision {
     pub flush_verification: bool,
 }
 
-impl GateMode {
-    /// Decide whether the gate should be open for the current frame.
-    ///
-    /// Each variant implements its own algorithm. All parameters come
-    /// from `GateInput` — the processor doesn't contain any gate logic.
-    ///
-    /// - **Optimistic**: open on speech immediately; close only after
-    ///   verification determines it's not the owner.
-    /// - **Strict**: stay closed until verification positively confirms
-    ///   the owner.
-    pub fn evaluate(self, input: &GateInput) -> GateDecision {
-        let is_speech = input.is_speech();
-
-        // No speech — hold open briefly after speech ends, then close.
-        if !is_speech {
-            let pass = input.silence_ms < input.hold_time_ms && input.silence_ms > 0;
-            return GateDecision { pass_audio: pass, flush_verification: false };
+impl GateDecision {
+    /// Audio passes through, verification state preserved.
+    fn pass() -> Self {
+        Self {
+            pass_audio: true,
+            flush_verification: false,
         }
+    }
 
-        // No profile enrolled — let all speech through.
-        if !input.has_profile {
-            return GateDecision { pass_audio: true, flush_verification: false };
+    /// Audio blocked, verification state preserved.
+    fn block() -> Self {
+        Self {
+            pass_audio: false,
+            flush_verification: false,
         }
+    }
 
-        match self {
-            GateMode::Optimistic => {
-                if !input.verification_ready {
-                    // Speech detected but not enough audio yet — trust.
-                    return GateDecision { pass_audio: true, flush_verification: false };
-                }
-
-                // Once verified, follow the result.
-                if input.verified {
-                    GateDecision { pass_audio: input.is_owner(), flush_verification: false }
-                } else {
-                    // Verification ready but not yet completed — trust.
-                    GateDecision { pass_audio: true, flush_verification: false }
-                }
-            }
-            GateMode::Strict => {
-                // Only open when verification positively confirms the owner.
-                GateDecision { pass_audio: input.is_owner(), flush_verification: false }
-            }
+    /// Audio blocked, verification state flushed (stale context).
+    fn block_and_flush() -> Self {
+        Self {
+            pass_audio: false,
+            flush_verification: true,
         }
     }
 }
 
-impl Default for GateMode {
-    fn default() -> Self {
-        Self::Optimistic
+// ─────────────────────────────────────────────────────────────────────────────
+// Mode implementations
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Optimistic: open immediately, revoke if verification fails.
+///
+/// | Speech? | Verified? | Owner? | Profile? | → Decision  |
+/// |---------|-----------|--------|----------|-------------|
+/// | no      | —         | —      | —        | hold/block  |
+/// | yes     | no        | —      | no       | pass        |
+/// | yes     | no        | —      | yes      | **pass** ←  |
+/// | yes     | yes       | yes    | yes      | pass        |
+/// | yes     | yes       | no     | yes      | **block**   |
+fn evaluate_optimistic(input: &GateInput) -> GateDecision {
+    // ── No speech ───────────────────────────────────────────────
+    if !input.is_speech() {
+        if input.in_hold_window() {
+            return GateDecision::pass();
+        }
+        if input.silence_ms < 2000 {
+            return GateDecision::block();
+        }
+        return GateDecision::block_and_flush();
     }
+
+    // ── Speech detected ─────────────────────────────────────────
+
+    if !input.has_profile {
+        return GateDecision::pass();
+    }
+
+    if input.verified {
+        return if input.is_owner() {
+            GateDecision::pass()
+        } else {
+            GateDecision::block()
+        };
+    }
+
+    // Verification hasn't completed yet → PASS (optimistic assumption).
+    GateDecision::pass()
 }
+
+/// Strict: block until verification confirms the owner.
+///
+/// | Speech? | Verified? | Owner? | Profile? | → Decision  |
+/// |---------|-----------|--------|----------|-------------|
+/// | no      | —         | —      | —        | hold/block  |
+/// | yes     | no        | —      | no       | pass        |
+/// | yes     | no        | —      | yes      | **block**   |
+/// | yes     | yes       | yes    | yes      | pass        |
+/// | yes     | yes       | no     | yes      | block       |
+fn evaluate_strict(input: &GateInput) -> GateDecision {
+    if !input.is_speech() {
+        if input.in_hold_window() {
+            return GateDecision::pass();
+        }
+        return GateDecision::block_and_flush();
+    }
+
+    if !input.has_profile {
+        return GateDecision::pass();
+    }
+
+    if input.verified && input.is_owner() {
+        return GateDecision::pass();
+    }
+
+    GateDecision::block()
+}
+
+/// VAD-only: pass all speech, block silence.
+fn evaluate_vad_only(input: &GateInput) -> GateDecision {
+    if input.is_speech() {
+        return GateDecision::pass();
+    }
+
+    if input.in_hold_window() {
+        return GateDecision::pass();
+    }
+
+    GateDecision::block_and_flush()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Gate config
+// ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GateConfig {
