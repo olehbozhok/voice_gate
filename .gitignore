@@ -1,0 +1,6 @@
+/target
+*.onnx
+profiles/*.json
+config.json
+.claude
+Cargo.lock
