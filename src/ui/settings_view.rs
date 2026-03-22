@@ -1,10 +1,90 @@
-//! Settings — threshold sliders, backend info.
+//! Settings — threshold sliders, device selection, backend info.
+
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use egui::{RichText, Ui};
+use parking_lot::RwLock;
+
 use crate::config::{Config, GateMode};
 
+/// Minimum interval between device list refreshes.
+const DEVICE_REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Cached audio device lists, refreshed in a background thread.
+pub struct DeviceListCache {
+    inner: Arc<RwLock<DeviceListInner>>,
+}
+
+struct DeviceListInner {
+    input_devices: Vec<String>,
+    output_devices: Vec<String>,
+    last_refresh: Instant,
+    refreshing: bool,
+}
+
+impl DeviceListCache {
+    /// Create with an initial (blocking) refresh.
+    pub fn new() -> Self {
+        let inner = DeviceListInner {
+            input_devices: crate::audio::capture::list_input_devices(),
+            output_devices: crate::audio::output::list_output_devices(),
+            last_refresh: Instant::now(),
+            refreshing: false,
+        };
+        Self {
+            inner: Arc::new(RwLock::new(inner)),
+        }
+    }
+
+    /// Trigger a background refresh if enough time has passed.
+    /// Calls `ctx.request_repaint()` when the refresh completes.
+    pub fn request_refresh(&self, ctx: &egui::Context) {
+        let should_refresh = {
+            let inner = self.inner.read();
+            !inner.refreshing && inner.last_refresh.elapsed() >= DEVICE_REFRESH_INTERVAL
+        };
+
+        if !should_refresh {
+            return;
+        }
+
+        {
+            self.inner.write().refreshing = true;
+        }
+
+        let inner = self.inner.clone();
+        let ctx = ctx.clone();
+        std::thread::Builder::new()
+            .name("device-refresh".into())
+            .spawn(move || {
+                let input = crate::audio::capture::list_input_devices();
+                let output = crate::audio::output::list_output_devices();
+                {
+                    let mut guard = inner.write();
+                    guard.input_devices = input;
+                    guard.output_devices = output;
+                    guard.last_refresh = Instant::now();
+                    guard.refreshing = false;
+                }
+                ctx.request_repaint();
+            })
+            .ok();
+    }
+
+    /// Read the cached device lists (non-blocking).
+    pub fn input_devices(&self) -> Vec<String> {
+        self.inner.read().input_devices.clone()
+    }
+
+    /// Read the cached device lists (non-blocking).
+    pub fn output_devices(&self) -> Vec<String> {
+        self.inner.read().output_devices.clone()
+    }
+}
+
 /// Returns true if anything changed.
-pub fn show(ui: &mut Ui, config: &mut Config) -> bool {
+pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &egui::Context) -> bool {
     let mut changed = false;
     ui.heading("Settings");
     ui.add_space(8.0);
@@ -68,55 +148,66 @@ pub fn show(ui: &mut Ui, config: &mut Config) -> bool {
         ui.label(egui::RichText::new("Changes take effect on next Start.").small().weak());
         ui.add_space(4.0);
 
+        // Periodically refresh device lists in the background.
+        devices.request_refresh(ctx);
+
+        let input_devices = devices.input_devices();
+        let output_devices = devices.output_devices();
+
         // Input device
-        let input_devices = crate::audio::capture::list_input_devices();
         let current_input = config.audio.input_device.clone().unwrap_or_else(|| "(System Default)".to_string());
         ui.horizontal(|ui| {
             ui.label("Input:");
-            egui::ComboBox::from_id_salt("input_device")
-                .selected_text(&current_input)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(config.audio.input_device.is_none(), "(System Default)").clicked() {
-                        config.audio.input_device = None;
+            let combo = egui::ComboBox::from_id_salt("input_device")
+                .selected_text(&current_input);
+            let response = combo.show_ui(ui, |ui| {
+                if ui.selectable_label(config.audio.input_device.is_none(), "(System Default)").clicked() {
+                    config.audio.input_device = None;
+                    changed = true;
+                }
+                for name in &input_devices {
+                    let selected = config.audio.input_device.as_deref() == Some(name.as_str());
+                    if ui.selectable_label(selected, name).clicked() {
+                        config.audio.input_device = Some(name.clone());
                         changed = true;
                     }
-                    for name in &input_devices {
-                        let selected = config.audio.input_device.as_deref() == Some(name.as_str());
-                        if ui.selectable_label(selected, name).clicked() {
-                            config.audio.input_device = Some(name.clone());
-                            changed = true;
-                        }
-                    }
-                });
+                }
+            });
+            // Trigger refresh when dropdown is opened.
+            if response.response.clicked() {
+                devices.request_refresh(ctx);
+            }
         });
 
         // Output device
-        let output_devices = crate::audio::output::list_output_devices();
         let current_output = config.audio.output_device.clone().unwrap_or_else(|| "(System Default)".to_string());
         ui.horizontal(|ui| {
             ui.label("Output:");
-            egui::ComboBox::from_id_salt("output_device")
-                .selected_text(&current_output)
-                .show_ui(ui, |ui| {
-                    if ui.selectable_label(config.audio.output_device.is_none(), "(System Default)").clicked() {
-                        config.audio.output_device = None;
+            let combo = egui::ComboBox::from_id_salt("output_device")
+                .selected_text(&current_output);
+            let response = combo.show_ui(ui, |ui| {
+                if ui.selectable_label(config.audio.output_device.is_none(), "(System Default)").clicked() {
+                    config.audio.output_device = None;
+                    changed = true;
+                }
+                for name in &output_devices {
+                    let selected = config.audio.output_device.as_deref() == Some(name.as_str());
+                    if ui.selectable_label(selected, name).clicked() {
+                        config.audio.output_device = Some(name.clone());
                         changed = true;
                     }
-                    for name in &output_devices {
-                        let selected = config.audio.output_device.as_deref() == Some(name.as_str());
-                        if ui.selectable_label(selected, name).clicked() {
-                            config.audio.output_device = Some(name.clone());
-                            changed = true;
-                        }
-                    }
-                });
+                }
+            });
+            if response.response.clicked() {
+                devices.request_refresh(ctx);
+            }
         });
     });
 
     ui.add_space(8.0);
     ui.group(|ui| {
         ui.label(RichText::new("Runtime").strong());
-        ui.label("Inference: tract (CPU, pure Rust)");
+        ui.label("Inference: ort (ONNX Runtime)");
         ui.label("Silero VAD: loaded from models/silero_vad.onnx");
         ui.label("ECAPA-TDNN: loaded from models/ecapa_tdnn.onnx");
     });

@@ -37,6 +37,7 @@ pub struct VoiceGateApp {
     live: Option<LivePipeline>,
     last_error: Option<String>,
     recording_flag: Arc<AtomicBool>,
+    device_cache: crate::ui::settings_view::DeviceListCache,
 }
 
 impl VoiceGateApp {
@@ -56,6 +57,7 @@ impl VoiceGateApp {
             telemetry: Arc::new(RwLock::new(PipelineTelemetry::default())),
             live: None, last_error: None,
             recording_flag: Arc::new(AtomicBool::new(false)),
+            device_cache: crate::ui::settings_view::DeviceListCache::new(),
         }
     }
 
@@ -218,7 +220,7 @@ impl eframe::App for VoiceGateApp {
                     }
                 }
                 ActiveView::Settings => {
-                    if crate::ui::settings_view::show(ui, &mut self.config) {
+                    if crate::ui::settings_view::show(ui, &mut self.config, &self.device_cache, ctx) {
                         let _ = self.config.save(&self.config_path);
                     }
                 }
