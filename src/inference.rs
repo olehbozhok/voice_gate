@@ -30,23 +30,6 @@ pub enum Input {
     State(ModelState),
 }
 
-/// Element type for input fact declarations (unused with ort, kept for API compat).
-#[derive(Debug, Clone, Copy)]
-pub enum DType {
-    F32,
-    I64,
-}
-
-/// Describes the expected shape and type of a model input.
-/// With ort, input facts are not needed (ort handles dynamic shapes natively),
-/// but kept in the API for documentation and forward compatibility.
-pub enum InputFact {
-    /// Input with a known shape and type.
-    Shape { shape: Vec<usize>, dtype: DType },
-    /// Constant i64 scalar.
-    ConstI64(i64),
-}
-
 /// Opaque model output with typed accessors.
 pub struct Output {
     data: Vec<f32>,
@@ -64,12 +47,6 @@ impl OnnxModel {
         Ok(Self { session })
     }
 
-    /// Load an ONNX model with input fact declarations.
-    /// With ort, input facts are ignored — ort resolves shapes at runtime.
-    pub fn load_with_inputs(path: &Path, _input_facts: &[InputFact]) -> Result<Self> {
-        Self::load(path)
-    }
-
     /// Run inference with the given inputs.
     pub fn run(&mut self, inputs: Vec<Input>) -> Result<Vec<Output>> {
         let ort_inputs: Vec<ort::session::SessionInputValue<'_>> = inputs
@@ -85,7 +62,7 @@ impl OnnxModel {
             .map(|value| {
                 let (_shape, data) = value.try_extract_tensor::<f32>()
                     .context("failed to extract f32 tensor from output")?;
-                let data: Vec<f32> = data.iter().copied().collect();
+                let data: Vec<f32> = data.to_vec();
                 Ok(Output { data })
             })
             .collect()
@@ -122,26 +99,9 @@ impl Input {
 // ── Output ───────────────────────────────────────────────────────────────
 
 impl Output {
-    /// Extract a single f32 scalar from the output.
-    pub fn to_scalar_f32(&self) -> Result<f32> {
-        self.data.first().copied()
-            .context("output tensor is empty")
-    }
-
     /// Extract the output as a flat Vec<f32>.
     pub fn to_f32_vec(&self) -> Result<Vec<f32>> {
         Ok(self.data.clone())
-    }
-
-    /// Convert this output into an opaque ModelState with explicit shape.
-    pub fn into_state_with_shape(self, shape: Vec<usize>) -> ModelState {
-        ModelState { data: self.data, shape }
-    }
-
-    /// Convert this output into an opaque ModelState (1-D shape).
-    pub fn into_state(self) -> ModelState {
-        let len = self.data.len();
-        ModelState { data: self.data, shape: vec![len] }
     }
 }
 

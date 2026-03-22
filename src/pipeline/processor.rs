@@ -11,7 +11,7 @@ use parking_lot::RwLock;
 use super::recorder::TestRecorder;
 use super::state_machine::GateState;
 use super::verifier::SpeakerVerifier;
-use crate::config::{Config, GateInput, GateDecision};
+use crate::config::{Config, GateInput};
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
 use crate::speaker::profile::{ProfileStore, VoiceProfile};
@@ -87,6 +87,7 @@ pub struct Processor {
 }
 
 impl Processor {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         config: Arc<RwLock<Config>>,
         vad: SileroVad,
@@ -156,7 +157,6 @@ impl Processor {
             speech_probability,
             vad_threshold,
             verified: self.verifier.has_verified(),
-            verification_ready: self.verification_buffer.len() >= self.verification_window_samples,
             similarity: ver_result.map(|r| r.similarity),
             similarity_threshold: cfg.speaker.similarity_threshold,
             has_profile: self.verifier.has_profile(),
@@ -252,7 +252,6 @@ impl Processor {
                     let cfg = self.config.read();
                     let mut session = EnrollmentSession::new(
                         cfg.audio.sample_rate,
-                        cfg.speaker.min_enrollment_seconds,
                     );
                     session.start();
                     self.enrollment = Some(session);

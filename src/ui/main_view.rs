@@ -7,6 +7,7 @@ use crate::config::Config;
 use crate::pipeline::processor::PipelineTelemetry;
 use crate::pipeline::state_machine::GateState;
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     telemetry: &Arc<RwLock<PipelineTelemetry>>,

@@ -1,7 +1,5 @@
 //! Voice enrollment — records user speech and builds a VoiceProfile.
 
-use anyhow::Result;
-use crate::error::ProfileError;
 use crate::vad::VadResult;
 
 const MIN_SEGMENT_SECS: f32 = 1.5;
@@ -18,7 +16,6 @@ pub enum EnrollmentState {
 /// Accumulates speech audio during enrollment and produces embedding windows.
 pub struct EnrollmentSession {
     sample_rate: u32,
-    min_duration_secs: f32,
     speech_buffer: Vec<f32>,
     current_segment: Vec<f32>,
     prev_was_speech: bool,
@@ -26,9 +23,9 @@ pub struct EnrollmentSession {
 }
 
 impl EnrollmentSession {
-    pub fn new(sample_rate: u32, min_duration_secs: f32) -> Self {
+    pub fn new(sample_rate: u32) -> Self {
         Self {
-            sample_rate, min_duration_secs,
+            sample_rate,
             speech_buffer: Vec::new(), current_segment: Vec::new(),
             prev_was_speech: false, state: EnrollmentState::Idle,
         }
@@ -64,10 +61,6 @@ impl EnrollmentSession {
         (self.speech_buffer.len() + self.current_segment.len()) as f32 / self.sample_rate as f32
     }
 
-    pub fn has_enough_speech(&self) -> bool {
-        self.speech_seconds() >= self.min_duration_secs
-    }
-
     /// Extract overlapping windows from accumulated speech for embedding.
     /// Returns Vec of audio chunks, each ~3 seconds.
     pub fn get_embedding_windows(&self) -> Vec<Vec<f32>> {
@@ -86,24 +79,5 @@ impl EnrollmentSession {
             }
         }
         windows
-    }
-
-    /// Validate we have enough audio, then transition to Processing.
-    pub fn begin_finalize(&mut self) -> Result<()> {
-        let dur = self.speech_seconds();
-        if dur < self.min_duration_secs {
-            let err = ProfileError::TooShort { min_seconds: self.min_duration_secs, got_seconds: dur };
-            self.state = EnrollmentState::Failed(err.to_string());
-            return Err(err.into());
-        }
-        self.state = EnrollmentState::Processing;
-        Ok(())
-    }
-
-    pub fn mark_done(&mut self) { self.state = EnrollmentState::Done; }
-    pub fn mark_failed(&mut self, msg: String) { self.state = EnrollmentState::Failed(msg); }
-
-    pub fn reset(&mut self) {
-        *self = Self::new(self.sample_rate, self.min_duration_secs);
     }
 }

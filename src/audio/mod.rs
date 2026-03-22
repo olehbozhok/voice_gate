@@ -10,9 +10,6 @@ pub const PIPELINE_SAMPLE_RATE: u32 = 16_000;
 /// Number of mono samples per pipeline frame (32ms at 16kHz).
 pub const PIPELINE_FRAME_SAMPLES: usize = 512;
 
-/// Pipeline channel count (mono).
-pub const PIPELINE_CHANNELS: u16 = 1;
-
 /// Duration of the output ring buffer in seconds. Caps the deque to prevent
 /// unbounded growth if the consumer (cpal callback) falls behind.
 pub const OUTPUT_RING_BUFFER_SECS: f32 = 1.0;

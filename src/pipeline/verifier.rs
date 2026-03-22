@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use crossbeam_channel::{Sender, bounded};
 use parking_lot::RwLock;
 
-use crate::config::Config;
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::profile::VoiceProfile;
 
@@ -19,8 +18,6 @@ use crate::speaker::profile::VoiceProfile;
 pub struct VerificationResult {
     /// Best cosine similarity across all enrolled profiles.
     pub similarity: f32,
-    /// Whether best similarity >= threshold.
-    pub is_owner: bool,
 }
 
 /// Handle to the background verifier thread.
@@ -36,11 +33,9 @@ impl SpeakerVerifier {
     ///
     /// * `ecapa` — the ECAPA-TDNN model (moved into the thread).
     /// * `profiles` — all enrolled voice profiles to compare against.
-    /// * `config` — shared config for live threshold reading.
     pub fn spawn(
         mut ecapa: EcapaTdnn,
         profiles: Vec<VoiceProfile>,
-        config: Arc<RwLock<Config>>,
     ) -> Self {
         /// Maximum pending audio windows in the channel.
         const CHANNEL_CAPACITY: usize = 4;
@@ -62,8 +57,6 @@ impl SpeakerVerifier {
 
                     match ecapa.extract(&window) {
                         Ok(embedding) => {
-                            let threshold = config.read().speaker.similarity_threshold;
-
                             // Compare against all profiles, take best match.
                             let mut best_sim = 0.0f32;
                             for profile in &profiles {
@@ -71,13 +64,11 @@ impl SpeakerVerifier {
                                 best_sim = best_sim.max(sim);
                             }
 
-                            let is_owner = best_sim >= threshold;
-                            log::trace!("Speaker similarity: {:.3} (best of {}, owner: {})",
-                                best_sim, profiles.len(), is_owner);
+                            log::trace!("Speaker similarity: {:.3} (best of {})",
+                                best_sim, profiles.len());
 
                             *result_writer.write() = Some(VerificationResult {
                                 similarity: best_sim,
-                                is_owner,
                             });
                             verified_flag.store(true, Ordering::Relaxed);
                         }

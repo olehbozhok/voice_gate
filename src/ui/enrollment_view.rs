@@ -23,6 +23,7 @@ pub struct EnrollmentViewState {
     editing: HashMap<usize, String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn show(
     ui: &mut Ui,
     state: &EnrollmentState,

@@ -41,7 +41,7 @@ pub struct SpeakerConfig {
 
 /// Gate operating mode — each variant implements a different tradeoff
 /// between latency (clipping the owner) and leakage (passing other voices).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GateMode {
     /// **"Open first, verify later"** (recommended).
     ///
@@ -53,6 +53,7 @@ pub enum GateMode {
     /// - Other voices: may leak for ~0.5–1s until verification completes.
     /// - Best for: calls, meetings, streaming — where clipping yourself
     ///   is worse than briefly hearing someone else.
+    #[default]
     Optimistic,
 
     /// **"Verify first, then open"** (strict).
@@ -89,12 +90,6 @@ impl GateMode {
     }
 }
 
-impl Default for GateMode {
-    fn default() -> Self {
-        Self::Optimistic
-    }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Gate input / output
 // ─────────────────────────────────────────────────────────────────────────────
@@ -108,8 +103,6 @@ pub struct GateInput {
     pub vad_threshold: f32,
     /// At least one speaker verification has completed.
     pub verified: bool,
-    /// The verifier has enough audio buffered to run verification.
-    pub verification_ready: bool,
     /// Most recent speaker similarity score (0.0–1.0), if any.
     pub similarity: Option<f32>,
     /// Similarity threshold for "is owner" decision.
@@ -132,14 +125,6 @@ impl GateInput {
     fn is_owner(&self) -> bool {
         match self.similarity {
             Some(sim) => sim >= self.similarity_threshold,
-            None => false,
-        }
-    }
-
-    /// Returns `true` if the most recent verification says "not owner".
-    fn is_rejected(&self) -> bool {
-        match self.similarity {
-            Some(sim) => sim < self.similarity_threshold,
             None => false,
         }
     }
@@ -324,8 +309,5 @@ impl Config {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
         Ok(())
-    }
-    pub fn pre_buffer_samples(&self) -> usize {
-        (self.audio.sample_rate * self.gate.pre_buffer_ms / 1000) as usize
     }
 }

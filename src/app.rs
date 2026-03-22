@@ -97,14 +97,13 @@ impl VoiceGateApp {
         let (tx, rx) = bounded(1);
         self.models_rx = Some(rx);
 
-        let config = self.config.clone();
         let profiles = self.profile_store.read().profiles().to_vec();
         let ctx = ctx.clone();
 
         std::thread::Builder::new()
             .name("model-loader".into())
             .spawn(move || {
-                let result = Self::load_models(config, profiles);
+                let result = Self::load_models(profiles);
                 let _ = tx.send(result.map_err(|e| format!("{:#}", e)));
                 ctx.request_repaint();
             })
@@ -113,13 +112,12 @@ impl VoiceGateApp {
 
     /// Load ML models — runs on background thread.
     fn load_models(
-        config: Arc<RwLock<Config>>,
         profiles: Vec<VoiceProfile>,
     ) -> anyhow::Result<LoadedModels> {
         log::info!("Loading models...");
         let vad = SileroVad::new(Path::new("models/silero_vad.onnx"))?;
         let ecapa_for_verifier = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
-        let verifier = SpeakerVerifier::spawn(ecapa_for_verifier, profiles, config);
+        let verifier = SpeakerVerifier::spawn(ecapa_for_verifier, profiles);
         let enrollment_ecapa = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
         log::info!("Models loaded");
         Ok(LoadedModels { vad, verifier, enrollment_ecapa })

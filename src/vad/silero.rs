@@ -97,7 +97,7 @@ impl SileroVad {
     /// Separate probability output from state output by tensor size.
     fn split_outputs(outputs: Vec<crate::inference::Output>) -> Result<(f32, ModelState)> {
         /// Number of elements in the LSTM state tensor (2 * 1 * 128 = 256).
-        const STATE_ELEMENTS: usize = LSTM_LAYERS * 1 * LSTM_HIDDEN_SIZE;
+        const STATE_ELEMENTS: usize = LSTM_LAYERS * LSTM_HIDDEN_SIZE;
 
         let mut prob = None;
         let mut state = None;

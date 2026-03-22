@@ -171,18 +171,6 @@ impl ProfileStore {
         Ok(())
     }
 
-    /// Find the best matching profile for an embedding.
-    /// Returns `(max_similarity, is_any_match)` where is_any_match
-    /// is true if any profile exceeds the threshold.
-    pub fn best_similarity(&self, embedding: &[f32], threshold: f32) -> (f32, bool) {
-        let mut max_sim = 0.0f32;
-        for profile in &self.profiles {
-            let sim = profile.similarity(embedding);
-            max_sim = max_sim.max(sim);
-        }
-        (max_sim, max_sim >= threshold)
-    }
-
     fn save_profile(&self, profile: &VoiceProfile, path: &Path) -> Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).context("create profile dir")?;
