@@ -1,9 +1,9 @@
 //! Enrollment wizard — guides user through voice recording + profile list.
 
-use std::collections::HashMap;
-use std::sync::Arc;
 use egui::{Color32, RichText, Ui, Vec2};
 use parking_lot::RwLock;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::speaker::enrollment::EnrollmentState;
 use crate::speaker::profile::ProfileStore;
@@ -56,18 +56,34 @@ pub fn show(
                 ui.label(format!("You need at least {:.0}s of speech.", min_secs));
             });
             ui.add_space(12.0);
-            if ui.button(RichText::new("Start Recording").size(16.0)).clicked() { on_start(); }
+            if ui
+                .button(RichText::new("Start Recording").size(16.0))
+                .clicked()
+            {
+                on_start();
+            }
         }
-        EnrollmentState::Recording { speech_seconds: secs } => {
+        EnrollmentState::Recording {
+            speech_seconds: secs,
+        } => {
             let progress = (secs / min_secs).clamp(0.0, 1.0);
-            let bar_color = if progress >= 1.0 { Color32::from_rgb(50, 205, 50) } else { Color32::from_rgb(70, 130, 255) };
+            let bar_color = if progress >= 1.0 {
+                Color32::from_rgb(50, 205, 50)
+            } else {
+                Color32::from_rgb(70, 130, 255)
+            };
 
-            ui.label(RichText::new(format!("Recording — {:.1}s / {:.0}s", secs, min_secs))
-                .size(16.0).color(Color32::from_rgb(220, 60, 60)));
+            ui.label(
+                RichText::new(format!("Recording — {:.1}s / {:.0}s", secs, min_secs))
+                    .size(16.0)
+                    .color(Color32::from_rgb(220, 60, 60)),
+            );
             ui.add_space(4.0);
 
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), egui::Sense::hover());
-            ui.painter().rect_filled(rect, 4.0, Color32::from_rgb(40, 40, 45));
+            let (rect, _) =
+                ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), egui::Sense::hover());
+            ui.painter()
+                .rect_filled(rect, 4.0, Color32::from_rgb(40, 40, 45));
             let mut fill = rect;
             fill.set_right(rect.left() + rect.width() * progress);
             ui.painter().rect_filled(fill, 4.0, bar_color);
@@ -82,21 +98,40 @@ pub fn show(
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 let can_finish = *secs >= min_secs;
-                if ui.add_enabled(can_finish, egui::Button::new("Finish & Save")).clicked() { on_finalize(); }
-                if ui.button("Cancel").clicked() { on_cancel(); }
+                if ui
+                    .add_enabled(can_finish, egui::Button::new("Finish & Save"))
+                    .clicked()
+                {
+                    on_finalize();
+                }
+                if ui.button("Cancel").clicked() {
+                    on_cancel();
+                }
             });
         }
-        EnrollmentState::Processing => { ui.spinner(); ui.label("Processing..."); }
+        EnrollmentState::Processing => {
+            ui.spinner();
+            ui.label("Processing...");
+        }
         EnrollmentState::Done => {
-            ui.label(RichText::new("Enrollment complete! Profile saved.")
-                .size(16.0).color(Color32::from_rgb(50, 205, 50)));
+            ui.label(
+                RichText::new("Enrollment complete! Profile saved.")
+                    .size(16.0)
+                    .color(Color32::from_rgb(50, 205, 50)),
+            );
             ui.add_space(8.0);
-            if ui.button("Add Another").clicked() { on_cancel(); }
+            if ui.button("Add Another").clicked() {
+                on_cancel();
+            }
         }
         EnrollmentState::Failed(reason) => {
-            ui.label(RichText::new(format!("Failed: {}", reason)).color(Color32::from_rgb(220, 60, 60)));
+            ui.label(
+                RichText::new(format!("Failed: {}", reason)).color(Color32::from_rgb(220, 60, 60)),
+            );
             ui.add_space(8.0);
-            if ui.button("Try Again").clicked() { on_cancel(); }
+            if ui.button("Try Again").clicked() {
+                on_cancel();
+            }
         }
     }
 }

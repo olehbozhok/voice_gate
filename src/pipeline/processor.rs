@@ -21,7 +21,6 @@ use crate::vad::VadResult;
 /// Duration of the speaker verification sliding window in seconds.
 const VERIFICATION_WINDOW_SECS: f32 = 1.5;
 
-
 /// Commands sent from the UI thread to control enrollment on the processor thread.
 pub enum EnrollmentCommand {
     /// Start recording speech for a new voice profile.
@@ -101,7 +100,8 @@ impl Processor {
         let cfg = config.read();
         let verification_window_samples =
             (VERIFICATION_WINDOW_SECS * cfg.audio.sample_rate as f32) as usize;
-        let frame_ms = (cfg.audio.frame_samples as f32 / cfg.audio.sample_rate as f32 * 1000.0) as u32;
+        let frame_ms =
+            (cfg.audio.frame_samples as f32 / cfg.audio.sample_rate as f32 * 1000.0) as u32;
         drop(cfg);
         Self {
             config,
@@ -174,7 +174,10 @@ impl Processor {
         let gate_open = decision.pass_audio;
 
         let similarity = ver_result.map(|r| r.similarity).unwrap_or(0.0);
-        let vad_result = VadResult { speech_probability, is_speech };
+        let vad_result = VadResult {
+            speech_probability,
+            is_speech,
+        };
 
         // Derive gate state for telemetry display.
         let state = if is_speech && gate_open {
@@ -250,9 +253,7 @@ impl Processor {
                 EnrollmentCommand::Start => {
                     log::info!("Enrollment started");
                     let cfg = self.config.read();
-                    let mut session = EnrollmentSession::new(
-                        cfg.audio.sample_rate,
-                    );
+                    let mut session = EnrollmentSession::new(cfg.audio.sample_rate);
                     session.start();
                     self.enrollment = Some(session);
                     let mut t = self.telemetry.write();
@@ -320,23 +321,23 @@ impl Processor {
         let count = self.profile_store.read().len() + 1;
         let name = format!("Profile {}", count);
         match VoiceProfile::from_embeddings(&name, &embeddings, duration) {
-            Ok(profile) => {
-                match self.profile_store.write().add(profile) {
-                    Ok(()) => {
-                        log::info!(
-                            "Enrollment complete: '{}', {} segments, {:.1}s",
-                            name, embeddings.len(), duration
-                        );
-                        let mut t = self.telemetry.write();
-                        t.enrollment_state = EnrollmentState::Done;
-                    }
-                    Err(e) => {
-                        log::error!("Failed to save profile: {}", e);
-                        let mut t = self.telemetry.write();
-                        t.enrollment_state = EnrollmentState::Failed(format!("Save failed: {}", e));
-                    }
+            Ok(profile) => match self.profile_store.write().add(profile) {
+                Ok(()) => {
+                    log::info!(
+                        "Enrollment complete: '{}', {} segments, {:.1}s",
+                        name,
+                        embeddings.len(),
+                        duration
+                    );
+                    let mut t = self.telemetry.write();
+                    t.enrollment_state = EnrollmentState::Done;
                 }
-            }
+                Err(e) => {
+                    log::error!("Failed to save profile: {}", e);
+                    let mut t = self.telemetry.write();
+                    t.enrollment_state = EnrollmentState::Failed(format!("Save failed: {}", e));
+                }
+            },
             Err(e) => {
                 log::error!("Failed to build profile: {}", e);
                 let mut t = self.telemetry.write();

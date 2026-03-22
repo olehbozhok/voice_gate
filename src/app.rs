@@ -2,8 +2,8 @@
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{bounded, Sender};
@@ -14,12 +14,17 @@ use crate::pipeline::processor::{EnrollmentCommand, PipelineTelemetry, Processor
 use crate::pipeline::verifier::SpeakerVerifier;
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::profile::{ProfileStore, VoiceProfile};
-use crate::ui::ActiveView;
 use crate::ui::enrollment_view::EnrollmentViewState;
+use crate::ui::ActiveView;
 use crate::vad::silero::SileroVad;
 
 #[derive(Clone, Copy)]
-enum EnrollmentAction { None, Start, Finalize, Cancel }
+enum EnrollmentAction {
+    None,
+    Start,
+    Finalize,
+    Cancel,
+}
 
 /// Pipeline state.
 enum PipelineState {
@@ -88,7 +93,9 @@ impl VoiceGateApp {
     }
 
     fn start(&mut self, ctx: &egui::Context) {
-        if self.is_running() || self.is_starting() { return; }
+        if self.is_running() || self.is_starting() {
+            return;
+        }
 
         self.pipeline = PipelineState::LoadingModels;
         self.last_error = None;
@@ -111,16 +118,18 @@ impl VoiceGateApp {
     }
 
     /// Load ML models — runs on background thread.
-    fn load_models(
-        profiles: Vec<VoiceProfile>,
-    ) -> anyhow::Result<LoadedModels> {
+    fn load_models(profiles: Vec<VoiceProfile>) -> anyhow::Result<LoadedModels> {
         log::info!("Loading models...");
         let vad = SileroVad::new(Path::new("models/silero_vad.onnx"))?;
         let ecapa_for_verifier = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
         let verifier = SpeakerVerifier::spawn(ecapa_for_verifier, profiles);
         let enrollment_ecapa = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
         log::info!("Models loaded");
-        Ok(LoadedModels { vad, verifier, enrollment_ecapa })
+        Ok(LoadedModels {
+            vad,
+            verifier,
+            enrollment_ecapa,
+        })
     }
 
     /// Check if models have finished loading, then start audio + processor.
@@ -143,16 +152,14 @@ impl VoiceGateApp {
         self.models_rx = None;
 
         match result {
-            Ok(models) => {
-                match self.start_pipeline(models) {
-                    Ok(()) => log::info!("Pipeline started"),
-                    Err(e) => {
-                        self.pipeline = PipelineState::Idle;
-                        self.last_error = Some(format!("Start failed: {:#}", e));
-                        log::error!("Pipeline start failed: {:#}", e);
-                    }
+            Ok(models) => match self.start_pipeline(models) {
+                Ok(()) => log::info!("Pipeline started"),
+                Err(e) => {
+                    self.pipeline = PipelineState::Idle;
+                    self.last_error = Some(format!("Start failed: {:#}", e));
+                    log::error!("Pipeline start failed: {:#}", e);
                 }
-            }
+            },
             Err(e) => {
                 self.pipeline = PipelineState::Idle;
                 self.last_error = Some(format!("Model loading failed: {}", e));
@@ -192,8 +199,14 @@ impl VoiceGateApp {
             .name("voice-gate-processor".into())
             .spawn(move || {
                 let mut proc = Processor::new(
-                    config, models.vad, models.verifier, models.enrollment_ecapa,
-                    telemetry, recording_flag, enrollment_rx, profile_store,
+                    config,
+                    models.vad,
+                    models.verifier,
+                    models.enrollment_ecapa,
+                    telemetry,
+                    recording_flag,
+                    enrollment_rx,
+                    profile_store,
                 );
                 if let Err(e) = proc.run(audio_rx, output_tx) {
                     log::error!("Processor error: {:#}", e);
@@ -217,11 +230,18 @@ impl VoiceGateApp {
     }
 
     fn toggle(&mut self, ctx: &egui::Context) {
-        if self.is_running() { self.stop(); } else { self.start(ctx); }
+        if self.is_running() {
+            self.stop();
+        } else {
+            self.start(ctx);
+        }
     }
 
     fn send_enrollment(&self, cmd: EnrollmentCommand) {
-        if let PipelineState::Running { ref enrollment_tx, .. } = self.pipeline {
+        if let PipelineState::Running {
+            ref enrollment_tx, ..
+        } = self.pipeline
+        {
             let _ = enrollment_tx.try_send(cmd);
         }
     }
@@ -250,78 +270,94 @@ impl eframe::App for VoiceGateApp {
             let err = err.clone();
             egui::TopBottomPanel::top("error").show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(format!("Error: {}", err)).color(egui::Color32::from_rgb(220, 60, 60)));
-                    if ui.small_button("x").clicked() { clear_error = true; }
+                    ui.label(
+                        egui::RichText::new(format!("Error: {}", err))
+                            .color(egui::Color32::from_rgb(220, 60, 60)),
+                    );
+                    if ui.small_button("x").clicked() {
+                        clear_error = true;
+                    }
                 });
             });
         }
-        if clear_error { self.last_error = None; }
+        if clear_error {
+            self.last_error = None;
+        }
 
         // Central panel
         let ctx_clone = ctx.clone();
-        egui::CentralPanel::default().show(ctx, |ui| {
-            match self.active_view {
-                ActiveView::Main => {
-                    if self.is_starting() {
-                        ui.heading("Voice Gate");
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Loading models...");
-                        });
-                        return;
-                    }
-
-                    let telem = self.telemetry.clone();
-                    let cfg = self.config.clone();
-                    let running = self.is_running();
-                    let has_profile = !self.profile_store.read().is_empty();
-                    let is_recording = self.recording_flag.load(std::sync::atomic::Ordering::Relaxed);
-                    let flag = self.recording_flag.clone();
-
-                    crate::ui::main_view::show(
-                        ui, &telem, &cfg, running, has_profile,
-                        &mut || self.toggle(&ctx_clone),
-                        is_recording,
-                        &mut || {
-                            let prev = flag.load(std::sync::atomic::Ordering::Relaxed);
-                            flag.store(!prev, std::sync::atomic::Ordering::Relaxed);
-                        },
-                    );
+        egui::CentralPanel::default().show(ctx, |ui| match self.active_view {
+            ActiveView::Main => {
+                if self.is_starting() {
+                    ui.heading("Voice Gate");
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label("Loading models...");
+                    });
+                    return;
                 }
-                ActiveView::Enrollment => {
-                    let t = self.telemetry.read();
-                    let state = t.enrollment_state.clone();
-                    let secs = t.enrollment_speech_secs;
-                    drop(t);
-                    let min = self.config.read().speaker.min_enrollment_seconds;
 
-                    if !self.is_running() {
-                        ui.heading("Voice Enrollment");
-                        ui.add_space(8.0);
-                        ui.label("Start the pipeline first (click Start on Dashboard).");
-                        return;
-                    }
+                let telem = self.telemetry.clone();
+                let cfg = self.config.clone();
+                let running = self.is_running();
+                let has_profile = !self.profile_store.read().is_empty();
+                let is_recording = self
+                    .recording_flag
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                let flag = self.recording_flag.clone();
 
-                    let action = Cell::new(EnrollmentAction::None);
-                    crate::ui::enrollment_view::show(ui, &state, secs, min,
-                        &self.profile_store, &mut self.enrollment_view_state,
-                        &mut || action.set(EnrollmentAction::Start),
-                        &mut || action.set(EnrollmentAction::Finalize),
-                        &mut || action.set(EnrollmentAction::Cancel),
-                    );
-                    match action.get() {
-                        EnrollmentAction::None => {}
-                        EnrollmentAction::Start => self.send_enrollment(EnrollmentCommand::Start),
-                        EnrollmentAction::Finalize => self.send_enrollment(EnrollmentCommand::Finalize),
-                        EnrollmentAction::Cancel => self.send_enrollment(EnrollmentCommand::Cancel),
-                    }
+                crate::ui::main_view::show(
+                    ui,
+                    &telem,
+                    &cfg,
+                    running,
+                    has_profile,
+                    &mut || self.toggle(&ctx_clone),
+                    is_recording,
+                    &mut || {
+                        let prev = flag.load(std::sync::atomic::Ordering::Relaxed);
+                        flag.store(!prev, std::sync::atomic::Ordering::Relaxed);
+                    },
+                );
+            }
+            ActiveView::Enrollment => {
+                let t = self.telemetry.read();
+                let state = t.enrollment_state.clone();
+                let secs = t.enrollment_speech_secs;
+                drop(t);
+                let min = self.config.read().speaker.min_enrollment_seconds;
+
+                if !self.is_running() {
+                    ui.heading("Voice Enrollment");
+                    ui.add_space(8.0);
+                    ui.label("Start the pipeline first (click Start on Dashboard).");
+                    return;
                 }
-                ActiveView::Settings => {
-                    let mut cfg = self.config.write();
-                    if crate::ui::settings_view::show(ui, &mut cfg, &self.device_cache, ctx) {
-                        let _ = cfg.save(&self.config_path);
-                    }
+
+                let action = Cell::new(EnrollmentAction::None);
+                crate::ui::enrollment_view::show(
+                    ui,
+                    &state,
+                    secs,
+                    min,
+                    &self.profile_store,
+                    &mut self.enrollment_view_state,
+                    &mut || action.set(EnrollmentAction::Start),
+                    &mut || action.set(EnrollmentAction::Finalize),
+                    &mut || action.set(EnrollmentAction::Cancel),
+                );
+                match action.get() {
+                    EnrollmentAction::None => {}
+                    EnrollmentAction::Start => self.send_enrollment(EnrollmentCommand::Start),
+                    EnrollmentAction::Finalize => self.send_enrollment(EnrollmentCommand::Finalize),
+                    EnrollmentAction::Cancel => self.send_enrollment(EnrollmentCommand::Cancel),
+                }
+            }
+            ActiveView::Settings => {
+                let mut cfg = self.config.write();
+                if crate::ui::settings_view::show(ui, &mut cfg, &self.device_cache, ctx) {
+                    let _ = cfg.save(&self.config_path);
                 }
             }
         });

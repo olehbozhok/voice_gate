@@ -4,7 +4,7 @@
 //! the WeSpeaker ECAPA-TDNN model's expected input format:
 //! `[batch, num_frames, 80]` mel features.
 
-use rustfft::{FftPlanner, num_complex::Complex};
+use rustfft::{num_complex::Complex, FftPlanner};
 
 /// Sample rate expected by the feature extractor.
 const SAMPLE_RATE: u32 = 16_000;
@@ -60,10 +60,7 @@ pub fn compute_mel_features(audio: &[f32]) -> (Vec<f32>, usize) {
 
         // Power spectrum (only first N_FFT/2 + 1 bins)
         let n_bins = N_FFT / 2 + 1;
-        let power_spectrum: Vec<f32> = fft_input[..n_bins]
-            .iter()
-            .map(|c| c.norm_sqr())
-            .collect();
+        let power_spectrum: Vec<f32> = fft_input[..n_bins].iter().map(|c| c.norm_sqr()).collect();
 
         // Apply mel filterbank + log
         for mel_idx in 0..N_MELS {
@@ -127,8 +124,8 @@ fn build_mel_filterbank() -> Vec<f32> {
         if bin_points[i + 2] > bin_points[i + 1] {
             for j in bin_points[i + 1]..bin_points[i + 2] {
                 if j < n_bins {
-                    filterbank[offset + j] =
-                        (bin_points[i + 2] - j) as f32 / (bin_points[i + 2] - bin_points[i + 1]) as f32;
+                    filterbank[offset + j] = (bin_points[i + 2] - j) as f32
+                        / (bin_points[i + 2] - bin_points[i + 1]) as f32;
                 }
             }
         }
@@ -140,9 +137,7 @@ fn build_mel_filterbank() -> Vec<f32> {
 /// Generate a Hann window of given length.
 fn hann_window(len: usize) -> Vec<f32> {
     (0..len)
-        .map(|i| {
-            0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / len as f32).cos())
-        })
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / len as f32).cos()))
         .collect()
 }
 
@@ -158,8 +153,11 @@ mod tests {
 
         // With 400-sample frames and 160-sample hops:
         // (16000 - 400) / 160 + 1 = 98 frames
-        assert!(num_frames > 90 && num_frames < 110,
-            "expected ~98 frames for 1s audio, got {}", num_frames);
+        assert!(
+            num_frames > 90 && num_frames < 110,
+            "expected ~98 frames for 1s audio, got {}",
+            num_frames
+        );
         assert_eq!(features.len(), num_frames * N_MELS);
     }
 

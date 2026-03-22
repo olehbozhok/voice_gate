@@ -4,10 +4,10 @@
 //! This thread computes embeddings and compares against ALL enrolled
 //! profiles, taking the maximum similarity. The processor never blocks.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
-use crossbeam_channel::{Sender, bounded};
+use crossbeam_channel::{bounded, Sender};
 use parking_lot::RwLock;
 
 use crate::speaker::embedding::EcapaTdnn;
@@ -33,10 +33,7 @@ impl SpeakerVerifier {
     ///
     /// * `ecapa` — the ECAPA-TDNN model (moved into the thread).
     /// * `profiles` — all enrolled voice profiles to compare against.
-    pub fn spawn(
-        mut ecapa: EcapaTdnn,
-        profiles: Vec<VoiceProfile>,
-    ) -> Self {
+    pub fn spawn(mut ecapa: EcapaTdnn, profiles: Vec<VoiceProfile>) -> Self {
         /// Maximum pending audio windows in the channel.
         const CHANNEL_CAPACITY: usize = 4;
 
@@ -51,9 +48,14 @@ impl SpeakerVerifier {
         std::thread::Builder::new()
             .name("speaker-verifier".into())
             .spawn(move || {
-                log::info!("Speaker verifier thread started ({} profiles)", profiles.len());
+                log::info!(
+                    "Speaker verifier thread started ({} profiles)",
+                    profiles.len()
+                );
                 while let Ok(window) = rx.recv() {
-                    if profiles.is_empty() { continue; }
+                    if profiles.is_empty() {
+                        continue;
+                    }
 
                     match ecapa.extract(&window) {
                         Ok(embedding) => {
@@ -64,8 +66,11 @@ impl SpeakerVerifier {
                                 best_sim = best_sim.max(sim);
                             }
 
-                            log::trace!("Speaker similarity: {:.3} (best of {})",
-                                best_sim, profiles.len());
+                            log::trace!(
+                                "Speaker similarity: {:.3} (best of {})",
+                                best_sim,
+                                profiles.len()
+                            );
 
                             *result_writer.write() = Some(VerificationResult {
                                 similarity: best_sim,
@@ -81,7 +86,12 @@ impl SpeakerVerifier {
             })
             .expect("failed to spawn speaker-verifier thread");
 
-        Self { tx, result, verified, has_profiles }
+        Self {
+            tx,
+            result,
+            verified,
+            has_profiles,
+        }
     }
 
     /// Submit an audio window for background verification (non-blocking).

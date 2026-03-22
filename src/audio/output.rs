@@ -12,8 +12,8 @@ use cpal::{Device, Stream, StreamConfig};
 use crossbeam_channel::Receiver;
 use parking_lot::Mutex;
 
-use crate::audio::{mono_to_channels, OUTPUT_RING_BUFFER_SECS, PIPELINE_SAMPLE_RATE};
 use crate::audio::resampler;
+use crate::audio::{mono_to_channels, OUTPUT_RING_BUFFER_SECS, PIPELINE_SAMPLE_RATE};
 use crate::error::AudioError;
 
 /// Return the system default output device.
@@ -27,10 +27,7 @@ pub fn default_output_device() -> Result<Device> {
 pub fn list_output_devices() -> Vec<String> {
     let host = cpal::default_host();
     host.output_devices()
-        .map(|devs| {
-            devs.filter_map(|d| d.name().ok())
-                .collect()
-        })
+        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default()
 }
 
@@ -68,11 +65,14 @@ pub fn start_output(device: &Device, rx: Receiver<Vec<f32>>) -> Result<Stream> {
 
     log::info!(
         "Output: device native config = {}Hz, {} ch (pipeline: {}Hz mono)",
-        native_rate, native_channels, PIPELINE_SAMPLE_RATE,
+        native_rate,
+        native_channels,
+        PIPELINE_SAMPLE_RATE,
     );
 
     // Ring buffer cap: 1 second of native-format audio.
-    let ring_buffer_cap = (native_rate as f32 * native_channels as f32 * OUTPUT_RING_BUFFER_SECS) as usize;
+    let ring_buffer_cap =
+        (native_rate as f32 * native_channels as f32 * OUTPUT_RING_BUFFER_SECS) as usize;
 
     let buf = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(ring_buffer_cap)));
 

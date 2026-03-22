@@ -84,7 +84,12 @@ impl DeviceListCache {
 }
 
 /// Returns true if anything changed.
-pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &egui::Context) -> bool {
+pub fn show(
+    ui: &mut Ui,
+    config: &mut Config,
+    devices: &DeviceListCache,
+    ctx: &egui::Context,
+) -> bool {
     let mut changed = false;
     ui.heading("Settings");
     ui.add_space(8.0);
@@ -93,9 +98,18 @@ pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &e
         ui.label(RichText::new("Voice Activity Detection").strong());
         ui.horizontal(|ui| {
             ui.label("Speech threshold:");
-            if ui.add(egui::Slider::new(&mut config.vad.threshold, 0.1..=0.95).step_by(0.05)).changed() { changed = true; }
+            if ui
+                .add(egui::Slider::new(&mut config.vad.threshold, 0.1..=0.95).step_by(0.05))
+                .changed()
+            {
+                changed = true;
+            }
         });
-        ui.label(egui::RichText::new("Higher = fewer false positives, may miss quiet speech.").small().weak());
+        ui.label(
+            egui::RichText::new("Higher = fewer false positives, may miss quiet speech.")
+                .small()
+                .weak(),
+        );
     });
 
     ui.add_space(8.0);
@@ -103,9 +117,23 @@ pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &e
         ui.label(RichText::new("Speaker Verification").strong());
         ui.horizontal(|ui| {
             ui.label("Similarity threshold:");
-            if ui.add(egui::Slider::new(&mut config.speaker.similarity_threshold, 0.40..=0.95).step_by(0.05)).changed() { changed = true; }
+            if ui
+                .add(
+                    egui::Slider::new(&mut config.speaker.similarity_threshold, 0.40..=0.95)
+                        .step_by(0.05),
+                )
+                .changed()
+            {
+                changed = true;
+            }
         });
-        ui.label(egui::RichText::new("Lower = permissive. Higher = strict (may reject unusual intonation).").small().weak());
+        ui.label(
+            egui::RichText::new(
+                "Lower = permissive. Higher = strict (may reject unusual intonation).",
+            )
+            .small()
+            .weak(),
+        );
     });
 
     ui.add_space(8.0);
@@ -149,7 +177,11 @@ pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &e
     ui.add_space(8.0);
     ui.group(|ui| {
         ui.label(RichText::new("Audio Devices").strong());
-        ui.label(egui::RichText::new("Changes take effect on next Start.").small().weak());
+        ui.label(
+            egui::RichText::new("Changes take effect on next Start.")
+                .small()
+                .weak(),
+        );
         ui.add_space(4.0);
 
         // Periodically refresh device lists in the background.
@@ -159,13 +191,19 @@ pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &e
         let output_devices = devices.output_devices();
 
         // Input device
-        let current_input = config.audio.input_device.clone().unwrap_or_else(|| "(System Default)".to_string());
+        let current_input = config
+            .audio
+            .input_device
+            .clone()
+            .unwrap_or_else(|| "(System Default)".to_string());
         ui.horizontal(|ui| {
             ui.label("Input:");
-            let combo = egui::ComboBox::from_id_salt("input_device")
-                .selected_text(&current_input);
+            let combo = egui::ComboBox::from_id_salt("input_device").selected_text(&current_input);
             let response = combo.show_ui(ui, |ui| {
-                if ui.selectable_label(config.audio.input_device.is_none(), "(System Default)").clicked() {
+                if ui
+                    .selectable_label(config.audio.input_device.is_none(), "(System Default)")
+                    .clicked()
+                {
                     config.audio.input_device = None;
                     changed = true;
                 }
@@ -184,13 +222,20 @@ pub fn show(ui: &mut Ui, config: &mut Config, devices: &DeviceListCache, ctx: &e
         });
 
         // Output device
-        let current_output = config.audio.output_device.clone().unwrap_or_else(|| "(System Default)".to_string());
+        let current_output = config
+            .audio
+            .output_device
+            .clone()
+            .unwrap_or_else(|| "(System Default)".to_string());
         ui.horizontal(|ui| {
             ui.label("Output:");
-            let combo = egui::ComboBox::from_id_salt("output_device")
-                .selected_text(&current_output);
+            let combo =
+                egui::ComboBox::from_id_salt("output_device").selected_text(&current_output);
             let response = combo.show_ui(ui, |ui| {
-                if ui.selectable_label(config.audio.output_device.is_none(), "(System Default)").clicked() {
+                if ui
+                    .selectable_label(config.audio.output_device.is_none(), "(System Default)")
+                    .clicked()
+                {
                     config.audio.output_device = None;
                     changed = true;
                 }

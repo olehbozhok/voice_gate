@@ -54,13 +54,16 @@ impl OnnxModel {
             .map(|inp| inp.into_session_input())
             .collect::<Result<_>>()?;
 
-        let outputs = self.session.run(ort_inputs.as_slice())
+        let outputs = self
+            .session
+            .run(ort_inputs.as_slice())
             .context("inference failed")?;
 
         outputs
             .values()
             .map(|value| {
-                let (_shape, data) = value.try_extract_tensor::<f32>()
+                let (_shape, data) = value
+                    .try_extract_tensor::<f32>()
                     .context("failed to extract f32 tensor from output")?;
                 let data: Vec<f32> = data.to_vec();
                 Ok(Output { data })
@@ -88,8 +91,9 @@ impl Input {
             }
             Input::State(state) => {
                 let shape_i64: Vec<i64> = state.shape.iter().map(|&d| d as i64).collect();
-                let value = ort::value::Tensor::from_array((shape_i64, state.data.into_boxed_slice()))
-                    .context("failed to create state tensor")?;
+                let value =
+                    ort::value::Tensor::from_array((shape_i64, state.data.into_boxed_slice()))
+                        .context("failed to create state tensor")?;
                 Ok(value.into())
             }
         }

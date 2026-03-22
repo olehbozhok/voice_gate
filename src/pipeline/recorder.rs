@@ -59,8 +59,12 @@ impl TestRecorder {
 
     /// Finalize and close both WAV files.
     pub fn finish(self) -> Result<()> {
-        self.original.finalize().context("failed to finalize test_original.wav")?;
-        self.gated.finalize().context("failed to finalize test_gated.wav")?;
+        self.original
+            .finalize()
+            .context("failed to finalize test_original.wav")?;
+        self.gated
+            .finalize()
+            .context("failed to finalize test_gated.wav")?;
         log::info!("Test recording finished");
         Ok(())
     }

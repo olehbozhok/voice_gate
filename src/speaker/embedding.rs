@@ -8,8 +8,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::audio::PIPELINE_SAMPLE_RATE;
 use crate::audio::mel;
+use crate::audio::PIPELINE_SAMPLE_RATE;
 use crate::inference::{Input, OnnxModel};
 
 /// Wrapper around the ECAPA-TDNN ONNX model.
@@ -60,12 +60,10 @@ impl EcapaTdnn {
         }
 
         // Model expects [batch=1, num_frames, 80]
-        let outputs = self.model.run(vec![
-            Input::F32 {
-                shape: vec![1, num_frames, mel::N_MELS],
-                data: features,
-            },
-        ])?;
+        let outputs = self.model.run(vec![Input::F32 {
+            shape: vec![1, num_frames, mel::N_MELS],
+            data: features,
+        }])?;
 
         let embedding = outputs[0].to_f32_vec()?;
         Ok(l2_normalize(&embedding))

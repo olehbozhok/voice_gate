@@ -8,8 +8,8 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
 use crossbeam_channel::Sender;
 
-use crate::audio::{channels_to_mono, PIPELINE_FRAME_SAMPLES, PIPELINE_SAMPLE_RATE};
 use crate::audio::resampler;
+use crate::audio::{channels_to_mono, PIPELINE_FRAME_SAMPLES, PIPELINE_SAMPLE_RATE};
 use crate::error::AudioError;
 
 /// Return the system default input device.
@@ -23,10 +23,7 @@ pub fn default_input_device() -> Result<Device> {
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
     host.input_devices()
-        .map(|devs| {
-            devs.filter_map(|d| d.name().ok())
-                .collect()
-        })
+        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
         .unwrap_or_default()
 }
 
@@ -64,7 +61,9 @@ pub fn start_capture(device: &Device, tx: Sender<Vec<f32>>) -> Result<Stream> {
 
     log::info!(
         "Capture: device native config = {}Hz, {} ch (pipeline: {}Hz mono)",
-        native_rate, native_channels, PIPELINE_SAMPLE_RATE,
+        native_rate,
+        native_channels,
+        PIPELINE_SAMPLE_RATE,
     );
 
     // Pre-allocate accumulator for converted (16kHz mono) samples.

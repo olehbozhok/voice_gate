@@ -16,7 +16,9 @@ pub const OUTPUT_RING_BUFFER_SECS: f32 = 1.0;
 
 /// RMS energy of a frame.
 pub fn rms(samples: &[f32]) -> f32 {
-    if samples.is_empty() { return 0.0; }
+    if samples.is_empty() {
+        return 0.0;
+    }
     let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
     (sum_sq / samples.len() as f32).sqrt()
 }

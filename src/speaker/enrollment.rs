@@ -26,8 +26,10 @@ impl EnrollmentSession {
     pub fn new(sample_rate: u32) -> Self {
         Self {
             sample_rate,
-            speech_buffer: Vec::new(), current_segment: Vec::new(),
-            prev_was_speech: false, state: EnrollmentState::Idle,
+            speech_buffer: Vec::new(),
+            current_segment: Vec::new(),
+            prev_was_speech: false,
+            state: EnrollmentState::Idle,
         }
     }
 
@@ -35,12 +37,16 @@ impl EnrollmentSession {
         self.speech_buffer.clear();
         self.current_segment.clear();
         self.prev_was_speech = false;
-        self.state = EnrollmentState::Recording { speech_seconds: 0.0 };
+        self.state = EnrollmentState::Recording {
+            speech_seconds: 0.0,
+        };
     }
 
     /// Feed a frame + VAD result. Call every frame while Recording.
     pub fn feed_frame(&mut self, frame: &[f32], vad: &VadResult) {
-        if !matches!(self.state, EnrollmentState::Recording { .. }) { return; }
+        if !matches!(self.state, EnrollmentState::Recording { .. }) {
+            return;
+        }
         if vad.is_speech {
             self.current_segment.extend_from_slice(frame);
             self.prev_was_speech = true;

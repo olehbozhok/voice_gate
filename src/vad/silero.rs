@@ -64,7 +64,9 @@ impl SileroVad {
     /// Run VAD inference on a single audio frame (512 samples at 16 kHz).
     /// Returns only the speech probability. The caller applies the threshold.
     pub fn process(&mut self, samples: &[f32]) -> Result<f32> {
-        let state = self.state.take()
+        let state = self
+            .state
+            .take()
             .unwrap_or_else(|| ModelState::zeros_f32(&STATE_SHAPE));
 
         // Prepend context from previous frame: [context(64) | samples(512)] = 576
@@ -83,9 +85,15 @@ impl SileroVad {
 
         let total_len = input_with_context.len();
         let outputs = self.model.run(vec![
-            Input::F32 { shape: vec![1, total_len], data: input_with_context },
+            Input::F32 {
+                shape: vec![1, total_len],
+                data: input_with_context,
+            },
             Input::State(state),
-            Input::I64 { shape: vec![], data: vec![PIPELINE_SAMPLE_RATE as i64] },
+            Input::I64 {
+                shape: vec![],
+                data: vec![PIPELINE_SAMPLE_RATE as i64],
+            },
         ])?;
 
         let (prob, new_state) = Self::split_outputs(outputs)?;
@@ -123,7 +131,6 @@ impl SileroVad {
         self.state = Some(ModelState::zeros_f32(&STATE_SHAPE));
         self.context = vec![0.0; CONTEXT_SAMPLES];
     }
-
 }
 
 #[cfg(test)]
@@ -139,25 +146,38 @@ mod tests {
 
     #[test]
     fn load_model() {
-        if skip_if_no_model() { eprintln!("SKIP: model not found"); return; }
+        if skip_if_no_model() {
+            eprintln!("SKIP: model not found");
+            return;
+        }
         let vad = SileroVad::new(Path::new(MODEL_PATH));
         assert!(vad.is_ok(), "failed to load model: {:?}", vad.err());
     }
 
     #[test]
     fn silence_has_low_probability() {
-        if skip_if_no_model() { eprintln!("SKIP: model not found"); return; }
+        if skip_if_no_model() {
+            eprintln!("SKIP: model not found");
+            return;
+        }
         let mut vad = SileroVad::new(Path::new(MODEL_PATH)).unwrap();
 
         let silence = vec![0.0f32; FRAME_SAMPLES];
         let prob = vad.process(&silence).unwrap();
 
-        assert!(prob < 0.3, "expected low probability for silence, got {}", prob);
+        assert!(
+            prob < 0.3,
+            "expected low probability for silence, got {}",
+            prob
+        );
     }
 
     #[test]
     fn reset_clears_state() {
-        if skip_if_no_model() { eprintln!("SKIP: model not found"); return; }
+        if skip_if_no_model() {
+            eprintln!("SKIP: model not found");
+            return;
+        }
         let mut vad = SileroVad::new(Path::new(MODEL_PATH)).unwrap();
 
         let silence = vec![0.0f32; FRAME_SAMPLES];
@@ -171,15 +191,25 @@ mod tests {
         let first_frame = fresh.process(&silence).unwrap();
 
         let diff = (after_reset - first_frame).abs();
-        assert!(diff < 1e-5, "reset didn't restore initial state, diff={}", diff);
+        assert!(
+            diff < 1e-5,
+            "reset didn't restore initial state, diff={}",
+            diff
+        );
     }
 
     /// Verify the model detects speech in recorded audio (requires test_mic.wav).
     #[test]
     fn detects_speech_in_wav() {
-        if skip_if_no_model() { eprintln!("SKIP: model not found"); return; }
+        if skip_if_no_model() {
+            eprintln!("SKIP: model not found");
+            return;
+        }
         let wav_path = Path::new("test_mic.wav");
-        if !wav_path.exists() { eprintln!("SKIP: test_mic.wav not found"); return; }
+        if !wav_path.exists() {
+            eprintln!("SKIP: test_mic.wav not found");
+            return;
+        }
 
         /// Threshold for speech detection in tests.
         const TEST_THRESHOLD: f32 = 0.5;
@@ -195,9 +225,13 @@ mod tests {
         let mut total_frames = 0;
 
         for chunk in samples.chunks(FRAME_SAMPLES) {
-            if chunk.len() < FRAME_SAMPLES { break; }
+            if chunk.len() < FRAME_SAMPLES {
+                break;
+            }
             let prob = vad.process(chunk).unwrap();
-            if prob >= TEST_THRESHOLD { speech_frames += 1; }
+            if prob >= TEST_THRESHOLD {
+                speech_frames += 1;
+            }
             total_frames += 1;
         }
 
