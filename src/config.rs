@@ -97,6 +97,15 @@ impl GateInput {
     }
 }
 
+/// Decision returned by [`GateMode::evaluate`] each frame.
+pub struct GateDecision {
+    /// Whether audio should pass through the gate.
+    pub pass_audio: bool,
+    /// Whether the verification buffer should be cleared.
+    /// Used when the mode determines the current audio context is stale.
+    pub flush_verification: bool,
+}
+
 impl GateMode {
     /// Decide whether the gate should be open for the current frame.
     ///
@@ -107,37 +116,38 @@ impl GateMode {
     ///   verification determines it's not the owner.
     /// - **Strict**: stay closed until verification positively confirms
     ///   the owner.
-    pub fn should_open(self, input: &GateInput) -> bool {
+    pub fn evaluate(self, input: &GateInput) -> GateDecision {
         let is_speech = input.is_speech();
 
+        // No speech — hold open briefly after speech ends, then close.
         if !is_speech {
-            // No speech — keep open only during hold period after speech ended.
-            return input.silence_ms < input.hold_time_ms && input.silence_ms > 0;
+            let pass = input.silence_ms < input.hold_time_ms && input.silence_ms > 0;
+            return GateDecision { pass_audio: pass, flush_verification: false };
         }
 
+        // No profile enrolled — let all speech through.
         if !input.has_profile {
-            return true;
+            return GateDecision { pass_audio: true, flush_verification: false };
         }
 
         match self {
             GateMode::Optimistic => {
                 if !input.verification_ready {
-                    // Speech detected but verification not ready.
-                    return true;
+                    // Speech detected but not enough audio yet — trust.
+                    return GateDecision { pass_audio: true, flush_verification: false };
                 }
 
-                // Open by default. Close only when verification has
-                // explicitly determined the speaker is NOT the owner.
+                // Once verified, follow the result.
                 if input.verified {
-                    input.is_owner()
+                    GateDecision { pass_audio: input.is_owner(), flush_verification: false }
                 } else {
-                    true // not yet verified — trust
+                    // Verification ready but not yet completed — trust.
+                    GateDecision { pass_audio: true, flush_verification: false }
                 }
             }
             GateMode::Strict => {
-                // Closed by default. Open only when verification has
-                // explicitly confirmed the speaker IS the owner.
-                input.is_owner()
+                // Only open when verification positively confirms the owner.
+                GateDecision { pass_audio: input.is_owner(), flush_verification: false }
             }
         }
     }

@@ -11,7 +11,7 @@ use parking_lot::RwLock;
 use super::recorder::TestRecorder;
 use super::state_machine::GateState;
 use super::verifier::SpeakerVerifier;
-use crate::config::{Config, GateInput};
+use crate::config::{Config, GateInput, GateDecision};
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
 use crate::speaker::profile::VoiceProfile;
@@ -162,8 +162,15 @@ impl Processor {
             hold_time_ms: cfg.gate.hold_time_ms,
             silence_ms: self.silence_ms,
         };
-        let gate_open = cfg.gate.mode.should_open(&gate_input);
+        let decision = cfg.gate.mode.evaluate(&gate_input);
         drop(cfg);
+
+        if decision.flush_verification {
+            self.verification_buffer.clear();
+            self.verifier.reset();
+        }
+
+        let gate_open = decision.pass_audio;
 
         let similarity = ver_result.map(|r| r.similarity).unwrap_or(0.0);
         let vad_result = VadResult { speech_probability, is_speech };
