@@ -57,33 +57,57 @@ pub enum GateMode {
     Strict,
 }
 
+/// Snapshot of the current speaker verification state, passed to
+/// [`GateMode::should_open`] so each mode can make its own decision.
+pub struct VerificationState {
+    /// VAD detected speech in this frame.
+    pub is_speech: bool,
+    /// At least one full verification has completed in this speech segment.
+    pub verified: bool,
+    /// Most recent speaker similarity score (0.0–1.0), if any.
+    pub similarity: Option<f32>,
+    /// Configured similarity threshold for "is owner" decision.
+    pub threshold: f32,
+    /// Whether there is an enrolled voice profile.
+    pub has_profile: bool,
+}
+
 impl GateMode {
-    /// Decide whether to open the gate when there is not yet enough audio
-    /// for a full speaker verification.
+    /// Decide whether the gate should be open for the current frame.
     ///
-    /// # Arguments
-    /// * `verified_once` — whether at least one verification has completed
-    ///   in the current speech segment.
-    /// * `last_result` — the most recent verification result `(is_owner, similarity)`,
-    ///   if any. Preserved across brief silences.
+    /// Each variant implements its own algorithm:
     ///
-    /// # Returns
-    /// `(is_owner, similarity)` to use for the gate decision this frame.
-    pub fn pre_verification_decision(
-        self,
-        verified_once: bool,
-        last_result: Option<(bool, f32)>,
-    ) -> (bool, f32) {
-        if verified_once {
-            // Already verified at least once — reuse the last result
-            // regardless of mode. This covers brief pauses and the gap
-            // while the next verification window accumulates.
-            return last_result.unwrap_or((false, 0.0));
+    /// - **Optimistic**: open on speech immediately; close only after
+    ///   verification fails. Prioritises low latency.
+    /// - **Strict**: stay closed until verification positively confirms
+    ///   the owner. Prioritises security.
+    pub fn should_open(self, state: &VerificationState) -> bool {
+        if !state.is_speech {
+            return false;
+        }
+
+        if !state.has_profile {
+            // No profile enrolled — let all speech through.
+            return true;
         }
 
         match self {
-            GateMode::Optimistic => (true, 1.0),
-            GateMode::Strict => (false, 0.0),
+            GateMode::Optimistic => {
+                // Open by default. Close only when verification has
+                // explicitly determined the speaker is NOT the owner.
+                match (state.verified, state.similarity) {
+                    (true, Some(sim)) => sim >= state.threshold,
+                    _ => true, // not yet verified — trust
+                }
+            }
+            GateMode::Strict => {
+                // Closed by default. Open only when verification has
+                // explicitly confirmed the speaker IS the owner.
+                match (state.verified, state.similarity) {
+                    (true, Some(sim)) => sim >= state.threshold,
+                    _ => false, // not yet verified — block
+                }
+            }
         }
     }
 }

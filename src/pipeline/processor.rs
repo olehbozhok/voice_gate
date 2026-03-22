@@ -8,7 +8,7 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::RwLock;
 
-use crate::config::Config;
+use crate::config::{Config, VerificationState};
 use crate::speaker::cosine_similarity;
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
@@ -141,27 +141,30 @@ impl Processor {
         // Stage 1: VAD
         let vad_result = self.vad.process(frame)?;
 
-        // Stage 2: Speaker verification
-        let (is_owner, similarity) = if vad_result.is_speech {
+        // Stage 2: Speaker verification — update similarity
+        if vad_result.is_speech {
             self.silence_frames = 0;
-            self.run_speaker_verification(frame)
+            self.update_speaker_verification(frame);
         } else {
             self.silence_frames += 1;
             if self.silence_frames >= self.silence_reset_frames {
-                // Long silence — reset verification state entirely.
                 self.verification_buffer.clear();
                 self.last_verification = None;
                 self.verified_at_least_once = false;
-                (false, 0.0)
-            } else if let Some((is_owner, sim)) = self.last_verification {
-                // Brief pause — keep the last verification result.
-                (is_owner, sim)
-            } else {
-                (false, 0.0)
             }
-        };
+        }
 
-        // Stage 3: Gate
+        // Stage 3: Gate mode decides open/closed
+        let verification = VerificationState {
+            is_speech: vad_result.is_speech,
+            verified: self.verified_at_least_once,
+            similarity: self.last_verification.map(|(_, sim)| sim),
+            threshold: self.config.speaker.similarity_threshold,
+            has_profile: self.profile.is_some(),
+        };
+        let is_owner = self.config.gate.mode.should_open(&verification);
+        let similarity = self.last_verification.map(|(_, s)| s).unwrap_or(0.0);
+
         let state = self.gate.update(vad_result.is_speech, is_owner);
 
         // Update telemetry for UI
@@ -200,14 +203,13 @@ impl Processor {
         Ok(output)
     }
 
-    fn run_speaker_verification(&mut self, frame: &[f32]) -> (bool, f32) {
+    /// Accumulate audio and run speaker embedding when enough data is available.
+    /// Updates `last_verification` and `verified_at_least_once`.
+    fn update_speaker_verification(&mut self, frame: &[f32]) {
         self.verification_buffer.extend(frame.iter());
 
         if self.verification_buffer.len() < self.verification_window_samples {
-            return self.config.gate.mode.pre_verification_decision(
-                self.verified_at_least_once,
-                self.last_verification,
-            );
+            return;
         }
 
         let window: Vec<f32> = self.verification_buffer.iter().copied().collect();
@@ -216,7 +218,7 @@ impl Processor {
 
         let profile = match &self.profile {
             Some(p) => p,
-            None => return (true, 1.0),
+            None => return,
         };
 
         match self.ecapa.extract(&window) {
@@ -226,11 +228,9 @@ impl Processor {
                 log::trace!("Speaker similarity: {:.3} (owner: {})", sim, is_owner);
                 self.last_verification = Some((is_owner, sim));
                 self.verified_at_least_once = true;
-                (is_owner, sim)
             }
             Err(e) => {
                 log::warn!("Embedding extraction failed: {}", e);
-                (false, 0.0)
             }
         }
     }
