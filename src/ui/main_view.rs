@@ -6,7 +6,15 @@ use parking_lot::RwLock;
 use crate::pipeline::processor::PipelineTelemetry;
 use crate::pipeline::state_machine::GateState;
 
-pub fn show(ui: &mut Ui, telemetry: &Arc<RwLock<PipelineTelemetry>>, is_running: bool, has_profile: bool, on_toggle: &mut dyn FnMut()) {
+pub fn show(
+    ui: &mut Ui,
+    telemetry: &Arc<RwLock<PipelineTelemetry>>,
+    is_running: bool,
+    has_profile: bool,
+    on_toggle: &mut dyn FnMut(),
+    is_recording: bool,
+    on_record_toggle: &mut dyn FnMut(),
+) {
     let t = telemetry.read().clone();
 
     ui.heading("Voice Gate");
@@ -45,6 +53,15 @@ pub fn show(ui: &mut Ui, telemetry: &Arc<RwLock<PipelineTelemetry>>, is_running:
     ui.horizontal(|ui| {
         let btn = if is_running { "Stop" } else { "Start" };
         if ui.button(RichText::new(btn).size(16.0)).clicked() { on_toggle(); }
+
+        if is_running {
+            let rec_btn = if is_recording { "Stop Recording" } else { "Record Test" };
+            let rec_color = if is_recording { Color32::from_rgb(220, 60, 60) } else { Color32::GRAY };
+            if ui.button(RichText::new(rec_btn).size(14.0).color(rec_color)).clicked() {
+                on_record_toggle();
+            }
+        }
+
         if !has_profile {
             ui.label(RichText::new("No voice profile — all speech passes through")
                 .color(Color32::from_rgb(255, 180, 50)));
