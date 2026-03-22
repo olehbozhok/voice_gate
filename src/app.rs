@@ -71,7 +71,7 @@ pub struct VoiceGateApp {
 
 impl VoiceGateApp {
     pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
-        let config_path = PathBuf::from("config.json");
+        let config_path = crate::config::default_config_path();
         let config = Config::load(&config_path);
         let profile_store = ProfileStore::load(&config.profiles_dir);
         let model_status = models::check_models(&config.models_dir);

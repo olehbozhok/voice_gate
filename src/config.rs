@@ -2,6 +2,17 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Returns the platform-appropriate config file path (`%APPDATA%/voice-gate/config.json`).
+pub fn default_config_path() -> PathBuf {
+    if let Some(data_dir) = dirs::data_dir() {
+        let dir = data_dir.join("voice-gate");
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("config.json")
+    } else {
+        PathBuf::from("config.json")
+    }
+}
+
 /// Returns the platform-appropriate default directory for ONNX model files.
 fn default_models_dir() -> PathBuf {
     if let Some(data_dir) = dirs::data_dir() {
