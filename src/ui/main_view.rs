@@ -3,12 +3,14 @@
 use egui::{Color32, RichText, Ui, Vec2};
 use std::sync::Arc;
 use parking_lot::RwLock;
+use crate::config::Config;
 use crate::pipeline::processor::PipelineTelemetry;
 use crate::pipeline::state_machine::GateState;
 
 pub fn show(
     ui: &mut Ui,
     telemetry: &Arc<RwLock<PipelineTelemetry>>,
+    config: &Arc<RwLock<Config>>,
     is_running: bool,
     has_profile: bool,
     on_toggle: &mut dyn FnMut(),
@@ -16,6 +18,7 @@ pub fn show(
     on_record_toggle: &mut dyn FnMut(),
 ) {
     let t = telemetry.read().clone();
+    let cfg = config.read();
 
     ui.heading("Voice Gate");
     ui.add_space(8.0);
@@ -73,12 +76,32 @@ pub fn show(
 
     // Details
     egui::CollapsingHeader::new("Details").show(ui, |ui| {
+        let vad_above = t.vad_probability >= cfg.vad.threshold;
+        let sim_above = t.speaker_similarity >= cfg.speaker.similarity_threshold;
+
         egui::Grid::new("telem").num_columns(2).spacing([20.0, 4.0]).show(ui, |ui| {
-            ui.label("Gate:"); ui.label(format!("{}", t.gate_state)); ui.end_row();
-            ui.label("RMS:"); ui.label(format!("{:.4}", t.input_level)); ui.end_row();
-            ui.label("VAD:"); ui.label(format!("{:.3}", t.vad_probability)); ui.end_row();
-            ui.label("Similarity:"); ui.label(format!("{:.3}", t.speaker_similarity)); ui.end_row();
-            ui.label("Open:"); ui.label(if t.gate_open { "Yes" } else { "No" }); ui.end_row();
+            ui.label("Gate:");
+            ui.label(format!("{}", t.gate_state));
+            ui.end_row();
+
+            ui.label("RMS:");
+            ui.label(format!("{:.4}", t.input_level));
+            ui.end_row();
+
+            ui.label("VAD:");
+            let vad_color = if vad_above { Color32::from_rgb(50, 205, 50) } else { Color32::from_rgb(180, 180, 180) };
+            ui.label(RichText::new(format!("{:.3} (thr: {:.2})", t.vad_probability, cfg.vad.threshold)).color(vad_color));
+            ui.end_row();
+
+            ui.label("Similarity:");
+            let sim_color = if sim_above { Color32::from_rgb(50, 205, 50) } else { Color32::from_rgb(230, 160, 60) };
+            ui.label(RichText::new(format!("{:.3} (thr: {:.2})", t.speaker_similarity, cfg.speaker.similarity_threshold)).color(sim_color));
+            ui.end_row();
+
+            ui.label("Open:");
+            let open_color = if t.gate_open { Color32::from_rgb(50, 205, 50) } else { Color32::from_rgb(180, 180, 180) };
+            ui.label(RichText::new(if t.gate_open { "Yes" } else { "No" }).color(open_color));
+            ui.end_row();
         });
     });
 }

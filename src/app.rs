@@ -187,12 +187,13 @@ impl eframe::App for VoiceGateApp {
             match self.active_view {
                 ActiveView::Main => {
                     let telem = self.telemetry.clone();
+                    let cfg = self.config.clone();
                     let running = self.is_running;
                     let has_profile = self.voice_profile.is_some();
                     let is_recording = self.recording_flag.load(std::sync::atomic::Ordering::Relaxed);
                     let flag = self.recording_flag.clone();
                     crate::ui::main_view::show(
-                        ui, &telem, running, has_profile,
+                        ui, &telem, &cfg, running, has_profile,
                         &mut || self.toggle(),
                         is_recording,
                         &mut || {
