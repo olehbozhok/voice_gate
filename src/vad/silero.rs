@@ -18,6 +18,10 @@ use anyhow::Result;
 use crate::inference::{DType, Input, InputFact, ModelState, OnnxModel};
 use super::VadResult;
 
+/// Expected audio frame size in samples (512 at 16kHz = 32ms).
+/// Silero VAD requires a fixed chunk size for its internal conditional branches.
+const FRAME_SAMPLES: usize = 512;
+
 /// Number of LSTM layers in the Silero VAD model.
 const LSTM_LAYERS: usize = 2;
 
@@ -36,7 +40,7 @@ impl SileroVad {
     /// Load Silero VAD from an ONNX file.
     pub fn new(threshold: f32, model_path: &Path) -> Result<Self> {
         let model = OnnxModel::load_with_inputs(model_path, &[
-            InputFact { shape: vec![1, 0], dtype: DType::F32 },                            // input: [1, N]
+            InputFact { shape: vec![1, FRAME_SAMPLES], dtype: DType::F32 },                // input: [1, 512] fixed chunk
             InputFact { shape: vec![LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE], dtype: DType::F32 }, // state: [2, 1, 128]
             InputFact { shape: vec![], dtype: DType::I64 },                                 // sr: scalar
         ])?;
