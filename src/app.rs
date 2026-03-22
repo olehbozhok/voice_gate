@@ -1,20 +1,22 @@
 //! Top-level application — eframe App implementation.
 
 use std::cell::Cell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use crossbeam_channel::{bounded, Sender};
 use parking_lot::RwLock;
 
 use crate::config::Config;
+use crate::models::{self, DownloadProgress, ModelStatus};
 use crate::pipeline::processor::{EnrollmentCommand, PipelineTelemetry, Processor};
 use crate::pipeline::verifier::SpeakerVerifier;
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::profile::{ProfileStore, VoiceProfile};
 use crate::ui::enrollment_view::EnrollmentViewState;
+use crate::ui::model_setup_view::ModelSetupAction;
 use crate::ui::ActiveView;
 use crate::vad::silero::SileroVad;
 
@@ -61,6 +63,10 @@ pub struct VoiceGateApp {
     enrollment_view_state: EnrollmentViewState,
     /// Receives loaded models from background thread.
     models_rx: Option<crossbeam_channel::Receiver<Result<LoadedModels, String>>>,
+    /// Model readiness status — checked at startup.
+    model_status: ModelStatus,
+    /// Shared download progress, updated by download thread.
+    download_progress: Option<Arc<Mutex<DownloadProgress>>>,
 }
 
 impl VoiceGateApp {
@@ -68,6 +74,7 @@ impl VoiceGateApp {
         let config_path = PathBuf::from("config.json");
         let config = Config::load(&config_path);
         let profile_store = ProfileStore::load(&config.profiles_dir);
+        let model_status = models::check_models(&config.models_dir);
 
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -81,6 +88,8 @@ impl VoiceGateApp {
             device_cache: crate::ui::settings_view::DeviceListCache::new(),
             enrollment_view_state: EnrollmentViewState::default(),
             models_rx: None,
+            model_status,
+            download_progress: None,
         }
     }
 
@@ -100,17 +109,17 @@ impl VoiceGateApp {
         self.pipeline = PipelineState::LoadingModels;
         self.last_error = None;
 
-        // Load models in background (heavy — takes seconds).
         let (tx, rx) = bounded(1);
         self.models_rx = Some(rx);
 
         let profiles = self.profile_store.read().profiles().to_vec();
+        let models_dir = self.config.read().models_dir.clone();
         let ctx = ctx.clone();
 
         std::thread::Builder::new()
             .name("model-loader".into())
             .spawn(move || {
-                let result = Self::load_models(profiles);
+                let result = Self::load_models(&models_dir, profiles);
                 let _ = tx.send(result.map_err(|e| format!("{:#}", e)));
                 ctx.request_repaint();
             })
@@ -118,18 +127,70 @@ impl VoiceGateApp {
     }
 
     /// Load ML models — runs on background thread.
-    fn load_models(profiles: Vec<VoiceProfile>) -> anyhow::Result<LoadedModels> {
-        log::info!("Loading models...");
-        let vad = SileroVad::new(Path::new("models/silero_vad.onnx"))?;
-        let ecapa_for_verifier = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
+    fn load_models(
+        models_dir: &std::path::Path,
+        profiles: Vec<VoiceProfile>,
+    ) -> anyhow::Result<LoadedModels> {
+        log::info!("Loading models from {}", models_dir.display());
+        let vad_path = models::silero_vad_path(models_dir);
+        let ecapa_path = models::ecapa_tdnn_path(models_dir);
+
+        let vad = SileroVad::new(&vad_path)?;
+        let ecapa_for_verifier = EcapaTdnn::new(&ecapa_path)?;
         let verifier = SpeakerVerifier::spawn(ecapa_for_verifier, profiles);
-        let enrollment_ecapa = EcapaTdnn::new(Path::new("models/ecapa_tdnn.onnx"))?;
+        let enrollment_ecapa = EcapaTdnn::new(&ecapa_path)?;
         log::info!("Models loaded");
         Ok(LoadedModels {
             vad,
             verifier,
             enrollment_ecapa,
         })
+    }
+
+    /// Start downloading missing models in background.
+    fn start_download(&mut self, ctx: &egui::Context) {
+        let progress = Arc::new(Mutex::new(DownloadProgress {
+            status: ModelStatus::Downloading {
+                current_model: String::new(),
+                progress: 0.0,
+            },
+        }));
+        self.download_progress = Some(progress.clone());
+        self.model_status = ModelStatus::Downloading {
+            current_model: "Starting...".into(),
+            progress: 0.0,
+        };
+
+        let models_dir = self.config.read().models_dir.clone();
+        let ctx = ctx.clone();
+
+        std::thread::Builder::new()
+            .name("model-downloader".into())
+            .spawn(move || {
+                if let Err(e) = models::download_models(&models_dir, progress.clone()) {
+                    let mut p = progress.lock().unwrap();
+                    p.status = ModelStatus::Error(format!("{:#}", e));
+                }
+                ctx.request_repaint();
+            })
+            .expect("failed to spawn model-downloader thread");
+    }
+
+    /// Poll download progress and update model_status.
+    fn poll_download(&mut self) {
+        if let Some(ref progress) = self.download_progress {
+            let p = progress.lock().unwrap();
+            self.model_status = p.status.clone();
+            if matches!(self.model_status, ModelStatus::DownloadComplete | ModelStatus::Error(_)) {
+                drop(p);
+                self.download_progress = None;
+                if matches!(self.model_status, ModelStatus::DownloadComplete) {
+                    // Re-check to transition to Ready.
+                    let models_dir = self.config.read().models_dir.clone();
+                    self.model_status = models::check_models(&models_dir);
+                }
+            }
+        }
     }
 
     /// Check if models have finished loading, then start audio + processor.
@@ -250,6 +311,37 @@ impl VoiceGateApp {
 impl eframe::App for VoiceGateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_startup();
+        self.poll_download();
+
+        // If downloading, repaint to update progress bar.
+        if self.download_progress.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        }
+
+        // ── Model setup gate ──────────────────────────────────────────
+        if !matches!(self.model_status, ModelStatus::Ready) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let models_dir = self.config.read().models_dir.display().to_string();
+                let action = crate::ui::model_setup_view::show(
+                    ui,
+                    &self.model_status,
+                    &models_dir,
+                    &self.download_progress,
+                );
+                match action {
+                    ModelSetupAction::None => {}
+                    ModelSetupAction::Download => self.start_download(ctx),
+                    ModelSetupAction::SetModelsDir(path) => {
+                        self.config.write().models_dir = path;
+                        let _ = self.config.read().save(&self.config_path);
+                        let models_dir = self.config.read().models_dir.clone();
+                        self.model_status = models::check_models(&models_dir);
+                    }
+                }
+            });
+            return;
+        }
 
         if self.is_running() || self.is_starting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));

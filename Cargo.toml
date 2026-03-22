@@ -28,6 +28,9 @@ egui = "0.31"
 rustfft = "6"
 
 # ── Utilities ──────────────────────────────────────────────────────────
+dirs = "6"
+rfd = "0.15"
+ureq = "3"
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

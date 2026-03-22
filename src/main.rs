@@ -5,6 +5,7 @@ mod audio;
 mod config;
 mod error;
 mod inference;
+mod models;
 mod pipeline;
 mod speaker;
 mod ui;

@@ -2,6 +2,15 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Returns the platform-appropriate default directory for ONNX model files.
+fn default_models_dir() -> PathBuf {
+    if let Some(data_dir) = dirs::data_dir() {
+        data_dir.join("voice-gate").join("models")
+    } else {
+        PathBuf::from("models")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub audio: AudioConfig,
@@ -9,6 +18,10 @@ pub struct Config {
     pub speaker: SpeakerConfig,
     pub gate: GateConfig,
     pub profiles_dir: PathBuf,
+    /// Directory where ONNX model files are stored.
+    /// Default: `%APPDATA%/voice-gate/models/` (Windows) or `~/.local/share/voice-gate/models/`.
+    #[serde(default = "default_models_dir")]
+    pub models_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,6 +301,7 @@ impl Default for Config {
                 mode: GateMode::Optimistic,
             },
             profiles_dir: PathBuf::from("profiles"),
+            models_dir: default_models_dir(),
         }
     }
 }
