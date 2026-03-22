@@ -59,8 +59,9 @@ impl EnrollmentSession {
         self.state = EnrollmentState::Recording { speech_seconds };
     }
 
+    /// Total accumulated speech including the segment currently being recorded.
     pub fn speech_seconds(&self) -> f32 {
-        self.speech_buffer.len() as f32 / self.sample_rate as f32
+        (self.speech_buffer.len() + self.current_segment.len()) as f32 / self.sample_rate as f32
     }
 
     pub fn has_enough_speech(&self) -> bool {
