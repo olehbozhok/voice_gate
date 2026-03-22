@@ -6,7 +6,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::inference::{Input, OnnxModel};
+use crate::audio::PIPELINE_SAMPLE_RATE;
+use crate::inference::{DType, Input, InputFact, OnnxModel};
 
 /// Wrapper around the ECAPA-TDNN ONNX model.
 pub struct EcapaTdnn {
@@ -16,13 +17,15 @@ pub struct EcapaTdnn {
 impl EcapaTdnn {
     /// Load ECAPA-TDNN from an ONNX file.
     pub fn new(model_path: &Path) -> Result<Self> {
-        let model = OnnxModel::load(model_path)?;
+        let model = OnnxModel::load_with_inputs(model_path, &[
+            InputFact { shape: vec![1, 0], dtype: DType::F32 }, // waveform: [1, N]
+        ])?;
         log::info!("ECAPA-TDNN loaded from {}", model_path.display());
 
         let ecapa = Self { model };
 
         // Warmup: run a dummy waveform to pre-allocate buffers.
-        let dummy = vec![0.0f32; 16000];
+        let dummy = vec![0.0f32; PIPELINE_SAMPLE_RATE as usize];
         let _ = ecapa.extract(&dummy);
 
         Ok(ecapa)
@@ -38,11 +41,11 @@ impl EcapaTdnn {
     ///
     /// An L2-normalized 192-dimensional embedding vector.
     pub fn extract(&self, waveform: &[f32]) -> Result<Vec<f32>> {
-        if waveform.len() < 16000 {
+        if waveform.len() < PIPELINE_SAMPLE_RATE as usize {
             log::warn!(
                 "Waveform too short ({} samples = {:.1}s), embedding may be unreliable",
                 waveform.len(),
-                waveform.len() as f32 / 16000.0,
+                waveform.len() as f32 / PIPELINE_SAMPLE_RATE as f32,
             );
         }
 

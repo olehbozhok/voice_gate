@@ -29,6 +29,21 @@ pub enum Input {
     State(ModelState),
 }
 
+/// Element type for input fact declarations.
+#[derive(Debug, Clone, Copy)]
+pub enum DType {
+    F32,
+    I64,
+}
+
+/// Describes the expected shape and type of a model input.
+/// Used to resolve dynamic shapes before optimization.
+pub struct InputFact {
+    /// Shape dimensions. Use `0` for dynamic (variable-length) dimensions.
+    pub shape: Vec<usize>,
+    pub dtype: DType,
+}
+
 /// Opaque model output with typed accessors.
 pub struct Output {
     inner: Tensor,
@@ -38,11 +53,39 @@ pub struct Output {
 
 impl OnnxModel {
     /// Load an ONNX model from disk, optimize the graph, and prepare for
-    /// inference.
+    /// inference. Use this when the model has fully determined input shapes.
     pub fn load(path: &Path) -> Result<Self> {
-        let plan = tract_onnx::onnx()
+        Self::load_with_inputs(path, &[])
+    }
+
+    /// Load an ONNX model and set explicit input facts for models with
+    /// dynamic or undetermined input shapes. Each `InputFact` specifies the
+    /// shape and element type of the corresponding model input (by position).
+    /// A dimension of `0` in the shape means "dynamic" (variable length).
+    pub fn load_with_inputs(path: &Path, input_facts: &[InputFact]) -> Result<Self> {
+        let mut model = tract_onnx::onnx()
             .model_for_path(path)
-            .with_context(|| format!("failed to load ONNX model: {}", path.display()))?
+            .with_context(|| format!("failed to load ONNX model: {}", path.display()))?;
+
+        let symbols = SymbolScope::default();
+        for (i, fact) in input_facts.iter().enumerate() {
+            let shape: Vec<TDim> = fact.shape.iter().enumerate().map(|(dim_idx, &d)| {
+                if d == 0 {
+                    // Create a unique symbol for each dynamic dimension.
+                    let name = format!("d{}_{}", i, dim_idx);
+                    symbols.sym(&name).into()
+                } else {
+                    d.into()
+                }
+            }).collect();
+            let dt = match fact.dtype {
+                DType::F32 => f32::datum_type(),
+                DType::I64 => i64::datum_type(),
+            };
+            model.set_input_fact(i, InferenceFact::dt_shape(dt, &shape))?;
+        }
+
+        let plan = model
             .into_optimized()
             .with_context(|| format!("failed to optimize model: {}", path.display()))?
             .into_runnable()

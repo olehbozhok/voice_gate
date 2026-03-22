@@ -6,8 +6,14 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::inference::{Input, ModelState, OnnxModel};
+use crate::inference::{DType, Input, InputFact, ModelState, OnnxModel};
 use super::VadResult;
+
+/// Number of LSTM layers in the Silero VAD model.
+const LSTM_LAYERS: usize = 2;
+
+/// Hidden size per LSTM layer in the Silero VAD model.
+const LSTM_HIDDEN_SIZE: usize = 64;
 
 /// Silero VAD wrapper — stateful LSTM model.
 pub struct SileroVad {
@@ -22,7 +28,12 @@ pub struct SileroVad {
 impl SileroVad {
     /// Load Silero VAD from an ONNX file.
     pub fn new(threshold: f32, model_path: &Path) -> Result<Self> {
-        let model = OnnxModel::load(model_path)?;
+        let model = OnnxModel::load_with_inputs(model_path, &[
+            InputFact { shape: vec![1, 0], dtype: DType::F32 },             // input: [1, N] audio
+            InputFact { shape: vec![1], dtype: DType::I64 },                // sr: [1] sample rate
+            InputFact { shape: vec![LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE], dtype: DType::F32 }, // h
+            InputFact { shape: vec![LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE], dtype: DType::F32 }, // c
+        ])?;
         log::info!("Silero VAD loaded from {}", model_path.display());
 
         let mut vad = Self {
@@ -43,8 +54,8 @@ impl SileroVad {
 
     /// Run VAD inference on a single audio frame (typically 512 samples at 16 kHz).
     pub fn process(&mut self, samples: &[f32]) -> Result<VadResult> {
-        let h = self.h.take().unwrap_or_else(|| ModelState::zeros_f32(&[2, 1, 64]));
-        let c = self.c.take().unwrap_or_else(|| ModelState::zeros_f32(&[2, 1, 64]));
+        let h = self.h.take().unwrap_or_else(|| ModelState::zeros_f32(&[LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE]));
+        let c = self.c.take().unwrap_or_else(|| ModelState::zeros_f32(&[LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE]));
 
         let mut outputs = self.model.run(vec![
             Input::F32 { shape: vec![1, samples.len()], data: samples.to_vec() },
@@ -68,8 +79,8 @@ impl SileroVad {
 
     /// Reset LSTM state to zeros.
     pub fn reset(&mut self) {
-        self.h = Some(ModelState::zeros_f32(&[2, 1, 64]));
-        self.c = Some(ModelState::zeros_f32(&[2, 1, 64]));
+        self.h = Some(ModelState::zeros_f32(&[LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE]));
+        self.c = Some(ModelState::zeros_f32(&[LSTM_LAYERS, 1, LSTM_HIDDEN_SIZE]));
     }
 
     pub fn set_threshold(&mut self, threshold: f32) {
