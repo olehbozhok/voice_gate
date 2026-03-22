@@ -148,6 +148,11 @@ impl Output {
 // ── ModelState ───────────────────────────────────────────────────────────
 
 impl ModelState {
+    /// Create a state tensor from existing data with explicit shape.
+    pub fn from_data(data: Vec<f32>, shape: Vec<usize>) -> Self {
+        Self { data, shape }
+    }
+
     /// Create a zero-filled f32 state tensor with the given shape.
     pub fn zeros_f32(shape: &[usize]) -> Self {
         let len: usize = shape.iter().product();

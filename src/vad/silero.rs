@@ -65,21 +65,46 @@ impl SileroVad {
         let state = self.state.take()
             .unwrap_or_else(|| ModelState::zeros_f32(&STATE_SHAPE));
 
-        let mut outputs = self.model.run(vec![
+        let outputs = self.model.run(vec![
             Input::F32 { shape: vec![1, samples.len()], data: samples.to_vec() },
             Input::State(state),
             Input::I64 { shape: vec![], data: vec![PIPELINE_SAMPLE_RATE as i64] },
         ])?;
 
-        // 2 outputs: [probability, updated_state]
-        let new_state = outputs.remove(1).into_state_with_shape(STATE_SHAPE.to_vec());
-        let prob = outputs.remove(0).to_scalar_f32()?;
+        // Silero VAD outputs: "output" (probability) and "stateN" (LSTM state).
+        // Find the probability output (small tensor) vs state (large tensor).
+        let (prob, new_state) = Self::split_outputs(outputs)?;
         self.state = Some(new_state);
 
         Ok(VadResult {
             speech_probability: prob,
             is_speech: prob >= self.threshold,
         })
+    }
+
+    /// Separate probability output from state output.
+    /// The probability tensor is small (1-2 elements), the state tensor is large (256 elements).
+    fn split_outputs(outputs: Vec<crate::inference::Output>) -> Result<(f32, ModelState)> {
+        /// Number of elements in the LSTM state tensor (2 * 1 * 128 = 256).
+        const STATE_ELEMENTS: usize = LSTM_LAYERS * 1 * LSTM_HIDDEN_SIZE;
+
+        let mut prob = None;
+        let mut state = None;
+
+        for output in outputs {
+            let data = output.to_f32_vec()?;
+            if data.len() == STATE_ELEMENTS && state.is_none() {
+                state = Some(ModelState::from_data(data, STATE_SHAPE.to_vec()));
+            } else if prob.is_none() {
+                prob = Some(data.first().copied().unwrap_or(0.0));
+            }
+        }
+
+        let p = prob.ok_or_else(|| anyhow::anyhow!("no probability output found"))?;
+        let s = state.ok_or_else(|| anyhow::anyhow!("no state output found"))?;
+
+        log::trace!("VAD prob={:.4}", p);
+        Ok((p, s))
     }
 
     /// Reset LSTM state to zeros.
