@@ -66,9 +66,6 @@ impl TestRecorder {
     }
 }
 
-impl Drop for TestRecorder {
-    fn drop(&mut self) {
-        // Safety net: hound::WavWriter flushes on drop, but silently.
-        // Prefer calling finish() explicitly for proper error handling.
-    }
-}
+// Note: WavWriter flushes on drop automatically. Prefer calling finish()
+// explicitly for proper error handling. If finish() is not called (e.g.
+// pipeline crashes), WavWriter's own Drop handles finalization silently.

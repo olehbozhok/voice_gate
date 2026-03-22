@@ -193,13 +193,11 @@ impl Processor {
         }
 
         // Write frames if recording
-        if let Some(ref mut rec) = self.recorder {
-            if let Err(e) = rec.write_original(original) {
-                log::warn!("Recording write error: {}", e);
-                self.recorder = None;
-                self.recording_flag.store(false, Ordering::Relaxed);
-            }
-            if let Err(e) = rec.write_gated(gated) {
+        if let Some(rec) = self.recorder.as_mut() {
+            let write_err = rec.write_original(original)
+                .and_then(|()| rec.write_gated(gated))
+                .err();
+            if let Some(e) = write_err {
                 log::warn!("Recording write error: {}", e);
                 self.recorder = None;
                 self.recording_flag.store(false, Ordering::Relaxed);
