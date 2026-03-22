@@ -1,13 +1,9 @@
-//! Audio processor — orchestrates VAD → Speaker Verification → Gate.
-//!
-//! Generic over `burn::tensor::backend::Backend` so the same code
-//! runs on CPU (NdArray), GPU (Wgpu), or CUDA without changes.
+//! Audio processor — orchestrates VAD -> Speaker Verification -> Gate.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
 
 use anyhow::Result;
-use burn::tensor::backend::Backend;
 use crossbeam_channel::{Receiver, Sender};
 use parking_lot::RwLock;
 
@@ -34,11 +30,11 @@ impl Default for PipelineTelemetry {
     }
 }
 
-/// Main audio processor, generic over Burn backend.
-pub struct Processor<B: Backend> {
+/// Main audio processor.
+pub struct Processor {
     config: Config,
-    vad: SileroVad<B>,
-    ecapa: EcapaTdnn<B>,
+    vad: SileroVad,
+    ecapa: EcapaTdnn,
     profile: Option<VoiceProfile>,
     gate: GateStateMachine,
     verification_buffer: VecDeque<f32>,
@@ -46,11 +42,11 @@ pub struct Processor<B: Backend> {
     telemetry: Arc<RwLock<PipelineTelemetry>>,
 }
 
-impl<B: Backend> Processor<B> {
+impl Processor {
     pub fn new(
         config: Config,
-        vad: SileroVad<B>,
-        ecapa: EcapaTdnn<B>,
+        vad: SileroVad,
+        ecapa: EcapaTdnn,
         profile: Option<VoiceProfile>,
         telemetry: Arc<RwLock<PipelineTelemetry>>,
     ) -> Self {
@@ -70,7 +66,7 @@ impl<B: Backend> Processor<B> {
         rx_input: Receiver<Vec<f32>>,
         tx_output: Sender<Vec<f32>>,
     ) -> Result<()> {
-        log::info!("Processor started (backend: {})", crate::backend::backend_name());
+        log::info!("Processor started (tract, CPU)");
         while let Ok(frame) = rx_input.recv() {
             let output = self.process_frame(&frame)?;
             let _ = tx_output.try_send(output);
@@ -128,7 +124,7 @@ impl<B: Backend> Processor<B> {
 
         let profile = match &self.profile {
             Some(p) => p,
-            None => return (true, 1.0), // No profile → pass all speech
+            None => return (true, 1.0),
         };
 
         match self.ecapa.extract(&window) {
