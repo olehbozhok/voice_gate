@@ -10,21 +10,21 @@ use crossbeam_channel::{bounded, Sender};
 use parking_lot::RwLock;
 
 use crate::config::Config;
-use crate::pipeline::processor::{PipelineTelemetry, Processor};
+use crate::pipeline::processor::{EnrollmentCommand, PipelineTelemetry, Processor};
 use crate::speaker::embedding::EcapaTdnn;
-use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
 use crate::speaker::profile::VoiceProfile;
 use crate::ui::ActiveView;
 use crate::vad::silero::SileroVad;
 
 #[derive(Clone, Copy)]
-enum EnrollmentAction { None, Start, Finalize, Reset }
+enum EnrollmentAction { None, Start, Finalize, Cancel }
 
 struct LivePipeline {
     _input_stream: cpal::Stream,
     _output_stream: cpal::Stream,
     _processor_handle: JoinHandle<()>,
     _stop_signal: Sender<Vec<f32>>,
+    enrollment_tx: Sender<EnrollmentCommand>,
 }
 
 pub struct VoiceGateApp {
@@ -35,7 +35,6 @@ pub struct VoiceGateApp {
     voice_profile: Option<VoiceProfile>,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
     live: Option<LivePipeline>,
-    enrollment: Option<EnrollmentSession>,
     last_error: Option<String>,
     recording_flag: Arc<AtomicBool>,
 }
@@ -55,7 +54,7 @@ impl VoiceGateApp {
             active_view: ActiveView::Main,
             is_running: false, voice_profile,
             telemetry: Arc::new(RwLock::new(PipelineTelemetry::default())),
-            live: None, enrollment: None, last_error: None,
+            live: None, last_error: None,
             recording_flag: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -85,7 +84,7 @@ impl VoiceGateApp {
         let (output_tx, output_rx) = bounded::<Vec<f32>>(64);
         let output_stream = crate::audio::output::start_output(&output_dev, output_rx)?;
 
-        // ML Models (tract — loaded from ONNX at runtime)
+        // ML Models (ort — loaded from ONNX at runtime)
         let vad = SileroVad::new(
             self.config.vad.threshold,
             Path::new("models/silero_vad.onnx"),
@@ -94,16 +93,23 @@ impl VoiceGateApp {
             Path::new("models/ecapa_tdnn.onnx"),
         )?;
 
+        // Enrollment command channel
+        let (enrollment_tx, enrollment_rx) = bounded::<EnrollmentCommand>(8);
+
         // Processor thread
         let telemetry = self.telemetry.clone();
         let profile = self.voice_profile.clone();
         let config = self.config.clone();
         let recording_flag = self.recording_flag.clone();
+        let profile_dir = self.config.profiles_dir.clone();
 
         let handle = std::thread::Builder::new()
             .name("voice-gate-processor".into())
             .spawn(move || {
-                let mut proc = Processor::new(config, vad, ecapa, profile, telemetry, recording_flag);
+                let mut proc = Processor::new(
+                    config, vad, ecapa, profile, telemetry,
+                    recording_flag, enrollment_rx, profile_dir,
+                );
                 if let Err(e) = proc.run(audio_rx, output_tx) {
                     log::error!("Processor error: {:#}", e);
                 }
@@ -112,6 +118,7 @@ impl VoiceGateApp {
         self.live = Some(LivePipeline {
             _input_stream: input_stream, _output_stream: output_stream,
             _processor_handle: handle, _stop_signal: audio_tx,
+            enrollment_tx,
         });
         Ok(())
     }
@@ -125,6 +132,13 @@ impl VoiceGateApp {
 
     fn toggle(&mut self) {
         if self.is_running { self.stop(); } else { self.start(); }
+    }
+
+    /// Send an enrollment command to the processor thread.
+    fn send_enrollment(&self, cmd: EnrollmentCommand) {
+        if let Some(ref live) = self.live {
+            let _ = live.enrollment_tx.try_send(cmd);
+        }
     }
 }
 
@@ -174,27 +188,31 @@ impl eframe::App for VoiceGateApp {
                     );
                 }
                 ActiveView::Enrollment => {
-                    if self.enrollment.is_none() {
-                        self.enrollment = Some(EnrollmentSession::new(
-                            self.config.audio.sample_rate, self.config.speaker.min_enrollment_seconds,
-                        ));
-                    }
-                    let e = self.enrollment.as_ref().unwrap();
-                    let state = e.state.clone();
-                    let secs = e.speech_seconds();
+                    // Read enrollment state from telemetry (non-blocking).
+                    let t = self.telemetry.read();
+                    let state = t.enrollment_state.clone();
+                    let secs = t.enrollment_speech_secs;
                     let min = self.config.speaker.min_enrollment_seconds;
+                    drop(t);
+
+                    if !self.is_running {
+                        ui.heading("Voice Enrollment");
+                        ui.add_space(8.0);
+                        ui.label("Start the pipeline first (click Start on Dashboard).");
+                        return;
+                    }
+
                     let action = Cell::new(EnrollmentAction::None);
                     crate::ui::enrollment_view::show(ui, &state, secs, min,
                         &mut || action.set(EnrollmentAction::Start),
                         &mut || action.set(EnrollmentAction::Finalize),
-                        &mut || action.set(EnrollmentAction::Reset),
+                        &mut || action.set(EnrollmentAction::Cancel),
                     );
-                    let e = self.enrollment.as_mut().unwrap();
                     match action.get() {
                         EnrollmentAction::None => {}
-                        EnrollmentAction::Start => e.start(),
-                        EnrollmentAction::Finalize => { e.state = EnrollmentState::Processing; }
-                        EnrollmentAction::Reset => e.reset(),
+                        EnrollmentAction::Start => self.send_enrollment(EnrollmentCommand::Start),
+                        EnrollmentAction::Finalize => self.send_enrollment(EnrollmentCommand::Finalize),
+                        EnrollmentAction::Cancel => self.send_enrollment(EnrollmentCommand::Cancel),
                     }
                 }
                 ActiveView::Settings => {

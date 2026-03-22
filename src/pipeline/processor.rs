@@ -11,6 +11,7 @@ use parking_lot::RwLock;
 use crate::config::Config;
 use crate::speaker::cosine_similarity;
 use crate::speaker::embedding::EcapaTdnn;
+use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
 use crate::speaker::profile::VoiceProfile;
 use crate::vad::silero::SileroVad;
 use super::state_machine::{GateState, GateStateMachine};
@@ -18,6 +19,16 @@ use super::recorder::TestRecorder;
 
 /// Duration of the speaker verification sliding window in seconds.
 const VERIFICATION_WINDOW_SECS: f32 = 1.5;
+
+/// Commands sent from the UI thread to control enrollment on the processor thread.
+pub enum EnrollmentCommand {
+    /// Start recording speech for a new voice profile.
+    Start,
+    /// Finish recording and build the voice profile.
+    Finalize,
+    /// Cancel enrollment and discard recorded audio.
+    Cancel,
+}
 
 /// Telemetry snapshot shared with the UI thread.
 #[derive(Debug, Clone)]
@@ -27,11 +38,23 @@ pub struct PipelineTelemetry {
     pub vad_probability: f32,
     pub speaker_similarity: f32,
     pub gate_open: bool,
+    /// Current enrollment state, if enrollment is active.
+    pub enrollment_state: EnrollmentState,
+    /// Accumulated speech seconds during enrollment.
+    pub enrollment_speech_secs: f32,
 }
 
 impl Default for PipelineTelemetry {
     fn default() -> Self {
-        Self { gate_state: GateState::Silent, input_level: 0.0, vad_probability: 0.0, speaker_similarity: 0.0, gate_open: false }
+        Self {
+            gate_state: GateState::Silent,
+            input_level: 0.0,
+            vad_probability: 0.0,
+            speaker_similarity: 0.0,
+            gate_open: false,
+            enrollment_state: EnrollmentState::Idle,
+            enrollment_speech_secs: 0.0,
+        }
     }
 }
 
@@ -47,6 +70,9 @@ pub struct Processor {
     telemetry: Arc<RwLock<PipelineTelemetry>>,
     recording_flag: Arc<AtomicBool>,
     recorder: Option<TestRecorder>,
+    enrollment: Option<EnrollmentSession>,
+    enrollment_rx: Receiver<EnrollmentCommand>,
+    profile_dir: std::path::PathBuf,
 }
 
 impl Processor {
@@ -57,6 +83,8 @@ impl Processor {
         profile: Option<VoiceProfile>,
         telemetry: Arc<RwLock<PipelineTelemetry>>,
         recording_flag: Arc<AtomicBool>,
+        enrollment_rx: Receiver<EnrollmentCommand>,
+        profile_dir: std::path::PathBuf,
     ) -> Self {
         let verification_window_samples = (VERIFICATION_WINDOW_SECS * config.audio.sample_rate as f32) as usize;
         Self {
@@ -67,6 +95,9 @@ impl Processor {
             telemetry,
             recording_flag,
             recorder: None,
+            enrollment: None,
+            enrollment_rx,
+            profile_dir,
         }
     }
 
@@ -76,8 +107,9 @@ impl Processor {
         rx_input: Receiver<Vec<f32>>,
         tx_output: Sender<Vec<f32>>,
     ) -> Result<()> {
-        log::info!("Processor started (tract, CPU)");
+        log::info!("Processor started (ort, ONNX Runtime)");
         while let Ok(frame) = rx_input.recv() {
+            self.handle_enrollment_commands();
             let output = self.process_frame(&frame)?;
             let _ = tx_output.try_send(output);
         }
@@ -110,6 +142,14 @@ impl Processor {
             t.vad_probability = vad_result.speech_probability;
             t.speaker_similarity = similarity;
             t.gate_open = state.is_open();
+        }
+
+        // Enrollment: feed audio frames when recording
+        if let Some(ref mut session) = self.enrollment {
+            session.feed_frame(frame, &vad_result);
+            let mut t = self.telemetry.write();
+            t.enrollment_state = session.state.clone();
+            t.enrollment_speech_secs = session.speech_seconds();
         }
 
         let output = if state.is_open() {
@@ -153,6 +193,99 @@ impl Processor {
             Err(e) => {
                 log::warn!("Embedding extraction failed: {}", e);
                 (false, 0.0)
+            }
+        }
+    }
+
+    /// Process any pending enrollment commands from the UI thread.
+    fn handle_enrollment_commands(&mut self) {
+        while let Ok(cmd) = self.enrollment_rx.try_recv() {
+            match cmd {
+                EnrollmentCommand::Start => {
+                    log::info!("Enrollment started");
+                    let mut session = EnrollmentSession::new(
+                        self.config.audio.sample_rate,
+                        self.config.speaker.min_enrollment_seconds,
+                    );
+                    session.start();
+                    self.enrollment = Some(session);
+                    let mut t = self.telemetry.write();
+                    t.enrollment_state = EnrollmentState::Recording { speech_seconds: 0.0 };
+                    t.enrollment_speech_secs = 0.0;
+                }
+                EnrollmentCommand::Finalize => {
+                    self.finalize_enrollment();
+                }
+                EnrollmentCommand::Cancel => {
+                    log::info!("Enrollment cancelled");
+                    self.enrollment = None;
+                    let mut t = self.telemetry.write();
+                    t.enrollment_state = EnrollmentState::Idle;
+                    t.enrollment_speech_secs = 0.0;
+                }
+            }
+        }
+    }
+
+    /// Extract embeddings from recorded speech and save voice profile.
+    fn finalize_enrollment(&mut self) {
+        let session = match self.enrollment.take() {
+            Some(s) => s,
+            None => return,
+        };
+
+        {
+            let mut t = self.telemetry.write();
+            t.enrollment_state = EnrollmentState::Processing;
+        }
+
+        let windows = session.get_embedding_windows();
+        if windows.is_empty() {
+            log::warn!("Enrollment: no valid speech windows");
+            let mut t = self.telemetry.write();
+            t.enrollment_state = EnrollmentState::Failed("No valid speech segments recorded".into());
+            return;
+        }
+
+        log::info!("Enrollment: extracting embeddings from {} windows", windows.len());
+        let mut embeddings = Vec::new();
+        for window in &windows {
+            match self.ecapa.extract(window) {
+                Ok(emb) => embeddings.push(emb),
+                Err(e) => {
+                    log::warn!("Embedding extraction failed for a window: {}", e);
+                }
+            }
+        }
+
+        if embeddings.is_empty() {
+            let mut t = self.telemetry.write();
+            t.enrollment_state = EnrollmentState::Failed("Failed to extract any embeddings".into());
+            return;
+        }
+
+        let duration = session.speech_seconds();
+        match VoiceProfile::from_embeddings("default", &embeddings, duration) {
+            Ok(profile) => {
+                let path = self.profile_dir.join("default.json");
+                match profile.save(&path) {
+                    Ok(()) => {
+                        log::info!("Enrollment complete: {} segments, {:.1}s", embeddings.len(), duration);
+                        self.profile = Some(profile);
+                        let mut t = self.telemetry.write();
+                        t.enrollment_state = EnrollmentState::Done;
+                    }
+                    Err(e) => {
+                        log::error!("Failed to save profile: {}", e);
+                        let mut t = self.telemetry.write();
+                        t.enrollment_state = EnrollmentState::Failed(format!("Save failed: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!("Failed to build profile: {}", e);
+                let mut t = self.telemetry.write();
+                t.enrollment_state = EnrollmentState::Failed(format!("Build failed: {}", e));
             }
         }
     }
