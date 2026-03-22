@@ -16,6 +16,12 @@ pub struct AudioConfig {
     pub sample_rate: u32,
     pub channels: u16,
     pub frame_samples: usize,
+    /// Selected input device name. `None` = system default.
+    #[serde(default)]
+    pub input_device: Option<String>,
+    /// Selected output device name. `None` = system default.
+    #[serde(default)]
+    pub output_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +42,10 @@ pub struct GateConfig {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            audio: AudioConfig { sample_rate: 16_000, channels: 1, frame_samples: 512 },
+            audio: AudioConfig {
+                sample_rate: 16_000, channels: 1, frame_samples: 512,
+                input_device: None, output_device: None,
+            },
             vad: VadConfig { threshold: 0.5 },
             speaker: SpeakerConfig { similarity_threshold: 0.70, min_enrollment_seconds: 10.0 },
             gate: GateConfig { hold_time_ms: 300, pre_buffer_ms: 100 },
