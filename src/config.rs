@@ -378,3 +378,254 @@ impl Config {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper to build a GateInput with sensible defaults.
+    /// Override fields as needed in each test.
+    fn base_input() -> GateInput {
+        GateInput {
+            speech_probability: 0.0,
+            vad_threshold: 0.5,
+            verified: false,
+            similarity: None,
+            similarity_threshold: 0.7,
+            has_profile: true,
+            hold_time_ms: 300,
+            silence_ms: 0,
+            similarity_available_ms: 0,
+            last_verified_as_owner: None,
+        }
+    }
+
+    fn speaking(input: &mut GateInput) {
+        input.speech_probability = 0.9;
+    }
+
+    fn silent(input: &mut GateInput, ms: u32) {
+        input.speech_probability = 0.0;
+        input.silence_ms = ms;
+    }
+
+    fn verified_owner(input: &mut GateInput) {
+        input.verified = true;
+        input.similarity = Some(0.9);
+        input.similarity_available_ms = 5000;
+        input.last_verified_as_owner = Some(true);
+    }
+
+    fn verified_not_owner(input: &mut GateInput) {
+        input.verified = true;
+        input.similarity = Some(0.3);
+        input.similarity_available_ms = 5000;
+        input.last_verified_as_owner = Some(false);
+    }
+
+    fn optimistic() -> GateMode {
+        GateMode::Optimistic(OptimisticConfig::default())
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Optimistic mode
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn optimistic_passes_speech_before_verification() {
+        let mut input = base_input();
+        speaking(&mut input);
+        let d = optimistic().evaluate(&input);
+        assert!(d.pass_audio, "optimistic should pass before verification");
+    }
+
+    #[test]
+    fn optimistic_passes_verified_owner() {
+        let mut input = base_input();
+        speaking(&mut input);
+        verified_owner(&mut input);
+        let d = optimistic().evaluate(&input);
+        assert!(d.pass_audio);
+    }
+
+    #[test]
+    fn optimistic_blocks_verified_not_owner() {
+        let mut input = base_input();
+        speaking(&mut input);
+        verified_not_owner(&mut input);
+        let d = optimistic().evaluate(&input);
+        assert!(!d.pass_audio, "optimistic should block verified non-owner");
+    }
+
+    #[test]
+    fn optimistic_passes_no_profile() {
+        let mut input = base_input();
+        input.has_profile = false;
+        speaking(&mut input);
+        let d = optimistic().evaluate(&input);
+        assert!(d.pass_audio, "no profile = pass all speech");
+    }
+
+    #[test]
+    fn optimistic_hold_window_owner() {
+        let mut input = base_input();
+        silent(&mut input, 200); // within hold_time_ms=300
+        input.last_verified_as_owner = Some(true);
+        let d = optimistic().evaluate(&input);
+        assert!(d.pass_audio, "hold window should pass for owner");
+    }
+
+    #[test]
+    fn optimistic_hold_window_blocks_non_owner() {
+        let mut input = base_input();
+        silent(&mut input, 200); // within hold_time_ms=300
+        input.last_verified_as_owner = Some(false);
+        let d = optimistic().evaluate(&input);
+        assert!(!d.pass_audio, "hold window should block for non-owner");
+    }
+
+    #[test]
+    fn optimistic_hold_window_unknown_passes() {
+        let mut input = base_input();
+        silent(&mut input, 200);
+        input.last_verified_as_owner = None;
+        let d = optimistic().evaluate(&input);
+        assert!(d.pass_audio, "hold window should pass when owner unknown");
+    }
+
+    #[test]
+    fn optimistic_silence_beyond_hold_blocks() {
+        let mut input = base_input();
+        silent(&mut input, 500); // beyond hold_time_ms=300
+        let d = optimistic().evaluate(&input);
+        assert!(!d.pass_audio);
+        assert!(!d.flush_verification, "should not flush before 2000ms");
+    }
+
+    #[test]
+    fn optimistic_long_silence_flushes() {
+        let mut input = base_input();
+        silent(&mut input, 2500);
+        let d = optimistic().evaluate(&input);
+        assert!(!d.pass_audio);
+        assert!(d.flush_verification, "2000ms+ silence should flush");
+    }
+
+    #[test]
+    fn optimistic_settle_delay_passes_during_settle() {
+        let mut input = base_input();
+        speaking(&mut input);
+        input.verified = true;
+        input.similarity = Some(0.3); // not owner
+        input.similarity_available_ms = 100; // < default settle 500ms
+        let cfg = OptimisticConfig { verification_settle_ms: 500 };
+        let d = GateMode::Optimistic(cfg).evaluate(&input);
+        assert!(d.pass_audio, "should pass during settle period");
+    }
+
+    #[test]
+    fn optimistic_blocks_after_settle() {
+        let mut input = base_input();
+        speaking(&mut input);
+        input.verified = true;
+        input.similarity = Some(0.3);
+        input.similarity_available_ms = 1000; // > settle 500ms
+        let cfg = OptimisticConfig { verification_settle_ms: 500 };
+        let d = GateMode::Optimistic(cfg).evaluate(&input);
+        assert!(!d.pass_audio, "should block non-owner after settle");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // Strict mode
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn strict_blocks_speech_before_verification() {
+        let mut input = base_input();
+        speaking(&mut input);
+        let d = GateMode::Strict.evaluate(&input);
+        assert!(!d.pass_audio, "strict should block before verification");
+    }
+
+    #[test]
+    fn strict_passes_verified_owner() {
+        let mut input = base_input();
+        speaking(&mut input);
+        verified_owner(&mut input);
+        let d = GateMode::Strict.evaluate(&input);
+        assert!(d.pass_audio);
+    }
+
+    #[test]
+    fn strict_blocks_verified_not_owner() {
+        let mut input = base_input();
+        speaking(&mut input);
+        verified_not_owner(&mut input);
+        let d = GateMode::Strict.evaluate(&input);
+        assert!(!d.pass_audio);
+    }
+
+    #[test]
+    fn strict_passes_no_profile() {
+        let mut input = base_input();
+        input.has_profile = false;
+        speaking(&mut input);
+        let d = GateMode::Strict.evaluate(&input);
+        assert!(d.pass_audio, "no profile = pass all speech");
+    }
+
+    #[test]
+    fn strict_hold_window_passes() {
+        let mut input = base_input();
+        silent(&mut input, 200);
+        let d = GateMode::Strict.evaluate(&input);
+        assert!(d.pass_audio, "strict hold window should pass");
+    }
+
+    #[test]
+    fn strict_silence_flushes() {
+        let mut input = base_input();
+        silent(&mut input, 500); // beyond hold_time_ms=300
+        let d = GateMode::Strict.evaluate(&input);
+        assert!(!d.pass_audio);
+        assert!(d.flush_verification, "strict flushes after hold window");
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // VadOnly mode
+    // ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn vad_only_passes_speech() {
+        let mut input = base_input();
+        speaking(&mut input);
+        let d = GateMode::VadOnly.evaluate(&input);
+        assert!(d.pass_audio);
+    }
+
+    #[test]
+    fn vad_only_hold_window_passes() {
+        let mut input = base_input();
+        silent(&mut input, 200);
+        let d = GateMode::VadOnly.evaluate(&input);
+        assert!(d.pass_audio);
+    }
+
+    #[test]
+    fn vad_only_silence_flushes() {
+        let mut input = base_input();
+        silent(&mut input, 500);
+        let d = GateMode::VadOnly.evaluate(&input);
+        assert!(!d.pass_audio);
+        assert!(d.flush_verification);
+    }
+
+    #[test]
+    fn vad_only_ignores_verification() {
+        let mut input = base_input();
+        speaking(&mut input);
+        verified_not_owner(&mut input);
+        let d = GateMode::VadOnly.evaluate(&input);
+        assert!(d.pass_audio, "vad_only should ignore verification");
+    }
+}
