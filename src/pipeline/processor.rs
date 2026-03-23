@@ -15,6 +15,7 @@ use crate::config::{Config, GateInput};
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
 use crate::speaker::profile::{ProfileStore, VoiceProfile};
+use crate::audio::AudioFrame;
 use crate::vad::silero::SileroVad;
 use crate::vad::VadResult;
 
@@ -75,6 +76,14 @@ pub struct Processor {
     silence_ms: u32,
     /// Duration of a single frame in milliseconds.
     frame_ms: u32,
+    /// Input device channel count.
+    input_channels: u16,
+    /// Input device sample rate.
+    input_rate: u32,
+    /// Output device channel count.
+    output_channels: u16,
+    /// Output device sample rate.
+    output_rate: u32,
     verification_buffer: VecDeque<f32>,
     verification_window_samples: usize,
     /// Ring buffer holding recent audio for pre-buffer feature.
@@ -107,6 +116,10 @@ impl Processor {
         recording_flag: Arc<AtomicBool>,
         enrollment_rx: Receiver<EnrollmentCommand>,
         profile_store: Arc<RwLock<ProfileStore>>,
+        input_channels: u16,
+        input_rate: u32,
+        output_channels: u16,
+        output_rate: u32,
     ) -> Self {
         let cfg = config.read();
         let verification_window_samples =
@@ -120,6 +133,10 @@ impl Processor {
             verifier,
             silence_ms: 0,
             frame_ms,
+            input_channels,
+            input_rate,
+            output_channels,
+            output_rate,
             enrollment_ecapa,
             verification_buffer: VecDeque::with_capacity(verification_window_samples),
             verification_window_samples,
@@ -136,18 +153,23 @@ impl Processor {
     }
 
     /// Run the processing loop. Blocks until `rx_input` is closed.
-    pub fn run(&mut self, rx_input: Receiver<Vec<f32>>, tx_output: Sender<Vec<f32>>) -> Result<()> {
+    pub fn run(
+        &mut self,
+        rx_input: Receiver<AudioFrame>,
+        tx_output: Sender<Vec<f32>>,
+    ) -> Result<()> {
         log::info!("Processor started (ort, ONNX Runtime)");
-        while let Ok(frame) = rx_input.recv() {
+        while let Ok(audio_frame) = rx_input.recv() {
             self.handle_enrollment_commands();
-            let output = self.process_frame(&frame)?;
+            let output = self.process_frame(&audio_frame)?;
             let _ = tx_output.try_send(output);
         }
         log::info!("Processor stopping");
         Ok(())
     }
 
-    fn process_frame(&mut self, frame: &[f32]) -> Result<Vec<f32>> {
+    fn process_frame(&mut self, audio_frame: &AudioFrame) -> Result<Vec<f32>> {
+        let frame = &audio_frame.pipeline;
         let input_level = crate::audio::rms(frame);
 
         // Stage 1: VAD
@@ -248,17 +270,18 @@ impl Processor {
             self.pre_buffer.pop_front();
         }
 
+        // Pass original audio when gate is open, silence otherwise.
+        // Convert between input and output device formats if needed.
         let output = if gate_open {
-            if !self.prev_gate_open && pre_buffer_samples > 0 {
-                // Gate just opened — flush pre-buffer then append current frame.
-                let out: Vec<f32> = self.pre_buffer.drain(..).collect();
-                // Current frame is already in pre_buffer, so out contains it.
-                out
-            } else {
-                frame.to_vec()
-            }
+            self.convert_to_output(&audio_frame.original)
         } else {
-            vec![0.0; frame.len()]
+            // Silence in output format: correct number of samples for output device.
+            let output_samples = (audio_frame.original.len() as f64
+                / (self.input_rate as f64 * self.input_channels as f64)
+                * self.output_rate as f64
+                * self.output_channels as f64)
+                .round() as usize;
+            vec![0.0; output_samples]
         };
         self.prev_gate_open = gate_open;
 
@@ -267,6 +290,40 @@ impl Processor {
         self.update_recording(should_record, frame, &output);
 
         Ok(output)
+    }
+
+    /// Convert interleaved audio from input device format to output device format.
+    /// Handles channel count and sample rate differences.
+    fn convert_to_output(&self, input: &[f32]) -> Vec<f32> {
+        let mut samples = input.to_vec();
+
+        // Channel conversion: input channels → output channels.
+        if self.input_channels != self.output_channels {
+            let mono = crate::audio::channels_to_mono(&samples, self.input_channels);
+            samples = crate::audio::mono_to_channels(&mono, self.output_channels);
+        }
+
+        // Sample rate conversion if devices differ.
+        if self.input_rate != self.output_rate {
+            // Deinterleave, resample each channel, reinterleave.
+            let ch = self.output_channels as usize;
+            let mut channels: Vec<Vec<f32>> = (0..ch)
+                .map(|c| samples.iter().skip(c).step_by(ch).copied().collect())
+                .collect();
+            for channel in &mut channels {
+                *channel =
+                    crate::audio::resampler::resample(channel, self.input_rate, self.output_rate);
+            }
+            let len = channels[0].len();
+            samples = Vec::with_capacity(len * ch);
+            for i in 0..len {
+                for channel in &channels {
+                    samples.push(channel[i]);
+                }
+            }
+        }
+
+        samples
     }
 
     /// Accumulate audio and submit to the background verifier when

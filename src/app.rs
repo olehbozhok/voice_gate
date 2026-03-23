@@ -6,7 +6,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+use anyhow::Context;
 use crossbeam_channel::{bounded, Sender};
+use cpal::traits::DeviceTrait;
 use parking_lot::RwLock;
 
 use crate::config::Config;
@@ -18,6 +20,7 @@ use crate::speaker::profile::ProfileStore;
 use crate::ui::enrollment_view::EnrollmentViewState;
 use crate::ui::model_setup_view::ModelSetupAction;
 use crate::ui::ActiveView;
+use crate::audio::AudioFrame;
 use crate::vad::silero::SileroVad;
 
 #[derive(Clone, Copy)]
@@ -38,7 +41,7 @@ enum PipelineState {
         _input_stream: cpal::Stream,
         _output_stream: cpal::Stream,
         _processor_handle: JoinHandle<()>,
-        _stop_signal: Sender<Vec<f32>>,
+        _stop_signal: Sender<AudioFrame>,
         enrollment_tx: Sender<EnrollmentCommand>,
     },
 }
@@ -240,13 +243,25 @@ impl VoiceGateApp {
             Some(name) => crate::audio::capture::find_input_device(name)?,
             None => crate::audio::capture::default_input_device()?,
         };
-        let (audio_tx, audio_rx) = bounded::<Vec<f32>>(64);
+        let input_supported = input_dev
+            .default_input_config()
+            .context("failed to query input device config")?;
+        let input_channels = input_supported.channels();
+        let input_rate = input_supported.sample_rate().0;
+
+        let (audio_tx, audio_rx) = bounded::<AudioFrame>(64);
         let input_stream = crate::audio::capture::start_capture(&input_dev, audio_tx.clone())?;
 
         let output_dev = match &cfg.audio.output_device {
             Some(name) => crate::audio::output::find_output_device(name)?,
             None => crate::audio::output::default_output_device()?,
         };
+        let output_supported = output_dev
+            .default_output_config()
+            .context("failed to query output device config")?;
+        let output_channels = output_supported.channels();
+        let output_rate = output_supported.sample_rate().0;
+
         let (output_tx, output_rx) = bounded::<Vec<f32>>(64);
         let output_stream = crate::audio::output::start_output(&output_dev, output_rx)?;
 
@@ -271,6 +286,10 @@ impl VoiceGateApp {
                     recording_flag,
                     enrollment_rx,
                     profile_store,
+                    input_channels,
+                    input_rate,
+                    output_channels,
+                    output_rate,
                 );
                 if let Err(e) = proc.run(audio_rx, output_tx) {
                     log::error!("Processor error: {:#}", e);

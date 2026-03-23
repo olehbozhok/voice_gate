@@ -10,6 +10,18 @@ pub const PIPELINE_SAMPLE_RATE: u32 = 16_000;
 /// Number of mono samples per pipeline frame (32ms at 16kHz).
 pub const PIPELINE_FRAME_SAMPLES: usize = 512;
 
+/// A single pipeline frame carrying both the original and downsampled audio.
+///
+/// The ML models run on `pipeline` (16kHz mono). The `original` audio
+/// (native rate, native channels, interleaved) passes straight to output
+/// without any quality loss from double-resampling.
+pub struct AudioFrame {
+    /// 16kHz mono samples for VAD and speaker verification.
+    pub pipeline: Vec<f32>,
+    /// Original device audio (native rate, native channels, interleaved).
+    pub original: Vec<f32>,
+}
+
 /// Duration of the output ring buffer in seconds. Caps the deque to prevent
 /// unbounded growth if the consumer (cpal callback) falls behind.
 pub const OUTPUT_RING_BUFFER_SECS: f32 = 1.0;

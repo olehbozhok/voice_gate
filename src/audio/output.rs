@@ -1,7 +1,7 @@
 //! Audio output via cpal.
 //!
-//! Receives 16kHz mono pipeline frames, resamples to the device's native
-//! sample rate, expands to native channel count, and plays back.
+//! Receives native-format audio from the processor (already at device rate
+//! and channel count) and plays it directly — no resampling needed.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -12,8 +12,7 @@ use cpal::{Device, Stream, StreamConfig};
 use crossbeam_channel::Receiver;
 use parking_lot::Mutex;
 
-use crate::audio::resampler;
-use crate::audio::{mono_to_channels, OUTPUT_RING_BUFFER_SECS, PIPELINE_SAMPLE_RATE};
+use crate::audio::OUTPUT_RING_BUFFER_SECS;
 use crate::error::AudioError;
 
 /// Return the system default output device.
@@ -47,8 +46,9 @@ pub fn find_output_device(name: &str) -> Result<Device> {
 
 /// Start playing audio on `device`.
 ///
-/// Receives 16kHz mono frames via `rx`, resamples to native rate,
-/// expands to native channels, and plays through the device.
+/// Receives native-format interleaved samples via `rx` and plays them
+/// directly through the device. No resampling or channel expansion needed —
+/// the processor already provides audio in the correct format.
 pub fn start_output(device: &Device, rx: Receiver<Vec<f32>>) -> Result<Stream> {
     let supported = device
         .default_output_config()
@@ -64,10 +64,9 @@ pub fn start_output(device: &Device, rx: Receiver<Vec<f32>>) -> Result<Stream> {
     };
 
     log::info!(
-        "Output: device native config = {}Hz, {} ch (pipeline: {}Hz mono)",
+        "Output: device native config = {}Hz, {} ch",
         native_rate,
         native_channels,
-        PIPELINE_SAMPLE_RATE,
     );
 
     // Ring buffer cap: 1 second of native-format audio.
@@ -76,19 +75,14 @@ pub fn start_output(device: &Device, rx: Receiver<Vec<f32>>) -> Result<Stream> {
 
     let buf = Arc::new(Mutex::new(VecDeque::<f32>::with_capacity(ring_buffer_cap)));
 
-    // Feeder thread: resample and channel-expand *before* pushing to deque.
+    // Feeder thread: push native audio directly to the ring buffer.
     let bp = buf.clone();
     std::thread::Builder::new()
         .name("audio-feeder".into())
         .spawn(move || {
             while let Ok(frame) = rx.recv() {
-                // 16kHz mono → native rate mono
-                let resampled = resampler::resample(&frame, PIPELINE_SAMPLE_RATE, native_rate);
-                // mono → native channels (interleaved)
-                let expanded = mono_to_channels(&resampled, native_channels);
-
                 let mut b = bp.lock();
-                b.extend(expanded);
+                b.extend(frame);
                 // Cap the ring buffer to prevent unbounded growth.
                 while b.len() > ring_buffer_cap {
                     b.pop_front();
