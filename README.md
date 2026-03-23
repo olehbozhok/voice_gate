@@ -1,141 +1,117 @@
-# Voice Gate (Burn Edition)
+# Voice Gate
 
-**Intelligent microphone gate that activates only for *your* voice.**
+**Microphone gate that only passes *your* voice through.**
 
-Built entirely in Rust with the [Burn](https://burn.dev) deep learning framework —
-**no ONNX Runtime, no C++ bindings, no shared libraries**. ONNX models are
-compiled into native Rust code at build time and run on any Burn backend.
+Voice Gate sits between your microphone and your headphones (or any audio output). It uses two neural networks to decide in real time whether to let audio through: one detects speech, the other identifies the speaker. If it's you — audio passes. If it's anyone else, background noise, or silence — it's muted.
+
+Useful for:
+- **Calls and meetings** — mutes your mic when someone next to you talks, your TV plays, or the dog barks.
+- **Streaming** — keeps only your voice on the stream without a physical mute button.
+- **Recording** — clean voice capture without ambient contamination.
 
 ---
 
-## How It Works
+## How it works
 
 ```
-┌─────────────┐      ┌───────────┐      ┌──────────────┐      ┌────────────┐
-│  Microphone  │─────▶│  Silero   │─────▶│  ECAPA-TDNN  │─────▶│   Output   │
-│   (cpal)     │ PCM  │   VAD     │ voice│  Speaker ID  │ mine │  (cpal /   │
-│              │      │  (Burn)   │      │   (Burn)     │      │   WAV)     │
-└─────────────┘      └─────┬─────┘      └──────┬───────┘      └────────────┘
-                       no voice             not mine
-                           │                    │
-                           ▼                    ▼
-                        [silence]           [silence]
+Microphone (48kHz native)
+    │
+    ├── original audio ──────────────────────────────────┐
+    │                                                    │
+    └── downsampled 16kHz mono                           │
+         │                                               │
+         ├── Silero VAD ──── speech? ─────┐              │
+         │                                │              │
+         └── ECAPA-TDNN ── is it you? ────┤              │
+                                          │              │
+                                     GateMode ───── pass/block
+                                          │              │
+                                          │              ▼
+                                          └─────── Headphones (48kHz)
 ```
 
-## Why Burn?
+Two key details:
+1. **Original audio quality is preserved.** The 16kHz copy is only for the neural networks. What you hear (or what goes to output) is the untouched 48kHz signal — no double-resampling artifacts.
+2. **The gate decision is a pure function.** All state goes in, a pass/block decision comes out. Easy to test, easy to reason about.
 
-| Feature           | ONNX Runtime (ort crate)           | Burn                                |
-|-------------------|------------------------------------|-------------------------------------|
-| C++ dependency    | Yes (libonnxruntime.so/.dll)       | **None — pure Rust**                |
-| Build complexity  | Must ship/find shared library      | `cargo build` and done              |
-| GPU support       | CUDA only                          | **CUDA + Vulkan + Metal + DX12**    |
-| WASM support      | No                                 | Yes (NdArray or WGPU backends)      |
-| Model format      | .onnx loaded at runtime            | Compiled to Rust at build time      |
-| Cross-compilation | Painful                            | Standard `cargo` cross-compile      |
+## Gate modes
 
-## Architecture
-
-```
-src/
-├── main.rs               # Entry point
-├── app.rs                # egui App — wires audio + pipeline + UI
-├── backend.rs            # Burn backend selection (CPU/WGPU/CUDA)
-├── config.rs             # Tuneable parameters (persisted to JSON)
-├── error.rs              # Error types
-│
-├── model/                # Auto-generated Burn code (from build.rs)
-│   └── mod.rs            # include!() of generated silero_vad.rs / ecapa_tdnn.rs
-│
-├── audio/
-│   ├── capture.rs        # Microphone input (cpal)
-│   ├── output.rs         # Audio output (cpal)
-│   └── resampler.rs      # Sample-rate conversion
-│
-├── vad/
-│   └── silero.rs         # Silero VAD wrapper (Burn tensor ops)
-│
-├── speaker/
-│   ├── embedding.rs      # ECAPA-TDNN wrapper (Burn tensor ops)
-│   ├── enrollment.rs     # Voice enrollment workflow
-│   └── profile.rs        # Voice profile persistence
-│
-├── pipeline/
-│   ├── processor.rs      # VAD → Speaker Verification → Gate
-│   └── state_machine.rs  # Silent / MyVoice / OtherVoice / Trailing
-│
-└── ui/
-    ├── main_view.rs      # Dashboard with level meters
-    ├── enrollment_view.rs# Enrollment wizard
-    └── settings_view.rs  # Threshold sliders
-```
-
-## Prerequisites
-
-| Requirement      | Version | Notes                                  |
-|------------------|---------|----------------------------------------|
-| Rust toolchain   | ≥ 1.80  | `rustup update stable`                 |
-| ALSA dev headers | —       | Linux only: `apt install libasound2-dev` |
-| CUDA toolkit     | ≥ 12.0  | Only for `--features cuda`             |
+| Mode | Behaviour | Trade-off |
+|------|-----------|-----------|
+| **Optimistic** (default) | Opens instantly on speech, closes if verification says "not you" | Your voice is never clipped. Other voices may leak for ~1s. |
+| **Strict** | Stays closed until verification confirms you | Other voices never leak. Your first ~1s may be lost (mitigated by pre-buffer). |
+| **VAD Only** | Passes all speech, blocks silence | No speaker verification. Useful without an enrolled profile. |
 
 ## Setup
 
-### 1. Download ONNX models into `models/`
+### Build and run
 
 ```bash
-# Silero VAD (direct download from GitHub)
-wget -O models/silero_vad.onnx \
-  https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx
-
-# ECAPA-TDNN (WeSpeaker variant, 512-d embeddings)
-git lfs install
-git clone https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM /tmp/ecapa
-cp /tmp/ecapa/*.onnx models/ecapa_tdnn.onnx
-```
-
-### 2. Build & Run
-
-```bash
-# CPU (pure Rust, no GPU needed)
+cargo build --release
 cargo run --release
-
-# GPU via Vulkan/Metal/DX12 (works on AMD, Intel, NVIDIA)
-cargo run --release --features wgpu
-
-# NVIDIA CUDA
-cargo run --release --features cuda
 ```
 
-The **first build** takes longer because `burn-onnx` compiles the ONNX models
-into Rust source code. Subsequent builds are fast (incremental).
+On first launch, Voice Gate downloads the required ONNX models (~27 MB total) to `%APPDATA%/voice-gate/models/`. No manual setup needed.
 
-### 3. Enroll Your Voice
+### Enroll your voice
 
-1. Go to the **Enrollment** tab in the GUI.
-2. Click **Start Recording** and speak for ≥ 10 seconds.
-3. Click **Finish & Save** — your voice profile is stored in `profiles/default.json`.
-4. Return to **Dashboard** and click **Start**.
+1. Go to **Dashboard** → click **Start** to begin the audio pipeline.
+2. Switch to the **Enrollment** tab.
+3. Click **Start Recording** and speak naturally for 10+ seconds.
+4. Click **Finish & Save**.
 
-Now only your voice passes through. Other voices, noise, and background are silenced.
+Your voice profile is stored in `%APPDATA%/voice-gate/profiles/`. You can create multiple profiles and rename or delete them from the Enrollment tab.
 
-## Tuning
+## Settings
 
-| Parameter              | Default | Effect                                   |
-|------------------------|---------|------------------------------------------|
-| `vad.threshold`        | 0.5     | Silero speech confidence cutoff           |
-| `speaker.similarity`   | 0.70    | Cosine similarity to accept as "you"      |
-| `gate.hold_time_ms`    | 300     | Keep gate open after speech ends          |
-| `gate.pre_buffer_ms`   | 100     | Audio kept before speech onset            |
+All parameters are adjustable live — no restart required (except audio device changes).
 
-All adjustable live from the **Settings** tab.
+| Parameter | Default | What it does |
+|-----------|---------|-------------|
+| Speech threshold | 0.50 | VAD confidence cutoff. Higher = fewer false triggers. |
+| Similarity threshold | 0.70 | How closely the voice must match your profile. Higher = stricter. |
+| Hold time | 300 ms | Keeps gate open after speech ends (prevents clipping word tails). |
+| Pre-buffer | 100 ms | Delay line that captures word onsets before the gate opens. |
+| Verification settle | 500 ms | Grace period before trusting verification in Optimistic mode. |
 
-## What If ONNX Models Are Missing?
+## Models
 
-The project builds and runs without models:
+| Model | Size | Purpose |
+|-------|------|---------|
+| [Silero VAD v5](https://github.com/snakers4/silero-vad) | 2.3 MB | Voice activity detection (512-sample frames at 16kHz) |
+| [ECAPA-TDNN](https://github.com/wenet-e2e/wespeaker) (WeSpeaker) | 24.9 MB | Speaker embedding extraction (192-dim, expects mel features) |
 
-- **No `silero_vad.onnx`** → Falls back to RMS energy-based detection (less accurate).
-- **No `ecapa_tdnn.onnx`** → Speaker verification disabled (all speech passes through).
+Downloaded automatically on first launch.
 
-This lets you iterate on UI and audio code without needing models.
+## Prerequisites
+
+| Requirement | Notes |
+|-------------|-------|
+| Rust ≥ 1.80 | `rustup update stable` |
+| ALSA dev headers | Linux only: `apt install libasound2-dev` |
+
+## Using with Discord / Zoom / OBS
+
+Voice Gate outputs audio to your headphones for monitoring. To use it as a virtual microphone in other apps, pair it with **VB-CABLE** — a free virtual audio device.
+
+### Setup
+
+1. Download VB-CABLE from [vb-audio.com/Cable](https://vb-audio.com/Cable/) (free, donationware).
+2. Unzip and run `VBCABLE_Setup_x64.exe` as administrator. Reboot.
+3. Two new audio devices appear: **CABLE Input** (output) and **CABLE Output** (input).
+
+### Configuration
+
+| App | Setting |
+|-----|---------|
+| **Voice Gate** (Settings tab) | Output device → **CABLE Input** |
+| **Discord / Zoom / OBS** | Input device → **CABLE Output** |
+
+Voice Gate writes gated audio to CABLE Input. The virtual cable forwards it to CABLE Output, which other apps see as a microphone. Only your voice gets through.
+
+## About
+
+Written with the help of AI (Claude), but with deliberate architectural decisions and hands-on testing — not generated slop. Every gate mode, every buffer strategy, every threading boundary was discussed, tested with real audio, and iterated on based on actual behaviour.
 
 ## License
 

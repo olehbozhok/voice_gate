@@ -1,5 +1,5 @@
 [package]
-name = "voice-gate"
+name = "voice_gate"
 version = "0.2.0"
 edition = "2021"
 authors = ["Your Name <your@email.com>"]
