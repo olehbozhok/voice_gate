@@ -11,11 +11,11 @@ use parking_lot::RwLock;
 use super::recorder::TestRecorder;
 use super::state_machine::GateState;
 use super::verifier::SpeakerVerifier;
+use crate::audio::AudioFrame;
 use crate::config::{Config, GateInput};
 use crate::speaker::embedding::EcapaTdnn;
 use crate::speaker::enrollment::{EnrollmentSession, EnrollmentState};
 use crate::speaker::profile::{ProfileStore, VoiceProfile};
-use crate::audio::AudioFrame;
 use crate::vad::silero::SileroVad;
 use crate::vad::VadResult;
 
@@ -86,11 +86,11 @@ pub struct Processor {
     output_rate: u32,
     verification_buffer: VecDeque<f32>,
     verification_window_samples: usize,
-    /// Ring buffer holding recent audio for pre-buffer feature.
-    /// When gate opens, these samples are flushed first so word onsets
-    /// captured just before the gate opened are not lost.
+    /// Delay line storing original-quality audio. Audio enters at the back
+    /// and is taken from the front when the gate is open, adding a constant
+    /// `pre_buffer_ms` latency that preserves word onsets.
     pre_buffer: VecDeque<f32>,
-    /// Whether the gate was open on the previous frame (for edge detection).
+    /// Whether the gate was open on the previous frame.
     prev_gate_open: bool,
     /// How long similarity has been available (ms since first verification).
     similarity_available_ms: u32,
@@ -260,28 +260,28 @@ impl Processor {
             t.enrollment_speech_secs = secs;
         }
 
-        // Pre-buffer: maintain a ring buffer of recent audio.
-        // Read max size from shared config each frame — no restart needed.
-        let pre_buffer_samples = self.config.read().pre_buffer_samples();
-        // Always push current frame into pre-buffer.
-        self.pre_buffer.extend(frame.iter());
-        // Trim to configured size (handles setting changes on the fly).
-        while self.pre_buffer.len() > pre_buffer_samples {
+        // Pre-buffer: delay line that preserves word onsets.
+        // Audio enters at back, exits from front with pre_buffer_ms delay.
+        let pre_buffer_ms = self.config.read().gate.pre_buffer_ms;
+        let frame_size = audio_frame.original.len();
+        let pre_buffer_cap =
+            ((pre_buffer_ms as f64 / 1000.0 * self.input_rate as f64 * self.input_channels as f64)
+                .round() as usize)
+                .max(frame_size);
+        // add current frame
+        self.pre_buffer.extend(audio_frame.original.iter());
+        // Drop old audio from the front if pre-buffer exceeds capacity
+        // or pre-buffer capacity is changed.
+        while self.pre_buffer.len() > pre_buffer_cap + frame_size {
             self.pre_buffer.pop_front();
         }
 
-        // Pass original audio when gate is open, silence otherwise.
-        // Convert between input and output device formats if needed.
+        // Return audio if gate is open
         let output = if gate_open {
-            self.convert_to_output(&audio_frame.original)
+            let delayed: Vec<f32> = self.pre_buffer.drain(..frame_size).collect();
+            self.convert_to_output(&delayed)
         } else {
-            // Silence in output format: correct number of samples for output device.
-            let output_samples = (audio_frame.original.len() as f64
-                / (self.input_rate as f64 * self.input_channels as f64)
-                * self.output_rate as f64
-                * self.output_channels as f64)
-                .round() as usize;
-            vec![0.0; output_samples]
+            vec![0.0; self.output_frame_size(frame_size)]
         };
         self.prev_gate_open = gate_open;
 
@@ -290,6 +290,14 @@ impl Processor {
         self.update_recording(should_record, frame, &output);
 
         Ok(output)
+    }
+
+    /// Calculate output frame size from an input frame size.
+    fn output_frame_size(&self, input_frame_size: usize) -> usize {
+        (input_frame_size as f64 / (self.input_rate as f64 * self.input_channels as f64)
+            * self.output_rate as f64
+            * self.output_channels as f64)
+            .round() as usize
     }
 
     /// Convert interleaved audio from input device format to output device format.
