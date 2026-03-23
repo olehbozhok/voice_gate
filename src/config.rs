@@ -356,11 +356,6 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Pre-buffer size in samples, derived from `gate.pre_buffer_ms`.
-    pub fn pre_buffer_samples(&self) -> usize {
-        (self.gate.pre_buffer_ms as usize * self.audio.sample_rate as usize) / 1000
-    }
-
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
             Ok(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
