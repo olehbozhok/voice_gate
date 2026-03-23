@@ -250,7 +250,7 @@ impl VoiceGateApp {
             .default_input_config()
             .context("failed to query input device config")?;
         let input_channels = input_supported.channels();
-        let input_rate = input_supported.sample_rate().0;
+        let input_rate = input_supported.sample_rate();
 
         let (audio_tx, audio_rx) = bounded::<AudioFrame>(64);
         let input_stream = crate::audio::capture::start_capture(&input_dev, audio_tx.clone())?;
@@ -263,7 +263,7 @@ impl VoiceGateApp {
             .default_output_config()
             .context("failed to query output device config")?;
         let output_channels = output_supported.channels();
-        let output_rate = output_supported.sample_rate().0;
+        let output_rate = output_supported.sample_rate();
 
         let (output_tx, output_rx) = bounded::<Vec<f32>>(64);
         let output_stream = crate::audio::output::start_output(&output_dev, output_rx)?;

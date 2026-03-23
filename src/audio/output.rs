@@ -26,7 +26,10 @@ pub fn default_output_device() -> Result<Device> {
 pub fn list_output_devices() -> Vec<String> {
     let host = cpal::default_host();
     host.output_devices()
-        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+        .map(|devs| {
+            devs.filter_map(|d| d.description().ok().map(|desc| desc.name().to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -35,7 +38,13 @@ pub fn find_output_device(name: &str) -> Result<Device> {
     let host = cpal::default_host();
     if let Ok(devices) = host.output_devices() {
         for dev in devices {
-            if dev.name().ok().as_deref() == Some(name) {
+            if dev
+                .description()
+                .ok()
+                .map(|d| d.name().to_string())
+                .as_deref()
+                == Some(name)
+            {
                 return Ok(dev);
             }
         }
@@ -54,7 +63,7 @@ pub fn start_output(device: &Device, rx: Receiver<Vec<f32>>) -> Result<Stream> {
         .default_output_config()
         .context("failed to query output device config")?;
 
-    let native_rate = supported.sample_rate().0;
+    let native_rate = supported.sample_rate();
     let native_channels = supported.channels();
 
     let config = StreamConfig {

@@ -23,7 +23,10 @@ pub fn default_input_device() -> Result<Device> {
 pub fn list_input_devices() -> Vec<String> {
     let host = cpal::default_host();
     host.input_devices()
-        .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+        .map(|devs| {
+            devs.filter_map(|d| d.description().ok().map(|desc| desc.name().to_string()))
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -32,7 +35,13 @@ pub fn find_input_device(name: &str) -> Result<Device> {
     let host = cpal::default_host();
     if let Ok(devices) = host.input_devices() {
         for dev in devices {
-            if dev.name().ok().as_deref() == Some(name) {
+            if dev
+                .description()
+                .ok()
+                .map(|d| d.name().to_string())
+                .as_deref()
+                == Some(name)
+            {
                 return Ok(dev);
             }
         }
@@ -51,7 +60,7 @@ pub fn start_capture(device: &Device, tx: Sender<AudioFrame>) -> Result<Stream> 
         .default_input_config()
         .context("failed to query input device config")?;
 
-    let native_rate = supported.sample_rate().0;
+    let native_rate = supported.sample_rate();
     let native_channels = supported.channels();
 
     let config = StreamConfig {

@@ -14,22 +14,22 @@ readme = "README.md"
 # ── ONNX Inference ────────────────────────────────────────────────────
 # ort bundles ONNX Runtime as a static library — no separate install needed.
 ort = "2.0.0-rc.12"
-ndarray = "0.16"
+ndarray = "0.17"
 
 # ── Audio I/O ──────────────────────────────────────────────────────────
-cpal = "0.15"
+cpal = "0.17"
 hound = "3.5"
 
 # ── GUI ──────────────────────────────────────────────────────────────
-eframe = "0.31"
-egui = "0.31"
+eframe = "0.33"
+egui = "0.33"
 
 # ── DSP (mel-spectrogram for speaker embedding) ───────────────────────
 rustfft = "6"
 
 # ── Utilities ──────────────────────────────────────────────────────────
 dirs = "6"
-rfd = "0.15"
+rfd = "0.17"
 ureq = "3"
 anyhow = "1"
 thiserror = "2"
