@@ -171,6 +171,8 @@ pub struct GateInput {
     pub silence_ms: u32,
     /// How long similarity has been available (ms since first verification).
     pub similarity_available_ms: u32,
+    /// Result of the last completed verification (None if never verified).
+    pub last_verified_as_owner: Option<bool>,
 }
 
 impl GateInput {
@@ -244,7 +246,9 @@ impl GateDecision {
 fn evaluate_optimistic(input: &GateInput, cfg: &OptimisticConfig) -> GateDecision {
     // ── No speech ───────────────────────────────────────────────
     if !input.is_speech() {
-        if input.in_hold_window() {
+        // Hold window keeps gate open after speech ends — but only
+        // if the last verified speaker was the owner (or unknown).
+        if input.in_hold_window() && input.last_verified_as_owner != Some(false) {
             return GateDecision::pass();
         }
         if input.silence_ms < 2000 {

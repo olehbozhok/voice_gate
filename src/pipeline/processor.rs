@@ -94,6 +94,8 @@ pub struct Processor {
     prev_gate_open: bool,
     /// How long similarity has been available (ms since first verification).
     similarity_available_ms: u32,
+    /// Result of the last completed verification.
+    last_verified_as_owner: Option<bool>,
     telemetry: Arc<RwLock<PipelineTelemetry>>,
     recording_flag: Arc<AtomicBool>,
     recorder: Option<TestRecorder>,
@@ -143,6 +145,7 @@ impl Processor {
             pre_buffer: VecDeque::new(),
             prev_gate_open: false,
             similarity_available_ms: 0,
+            last_verified_as_owner: None,
             telemetry,
             recording_flag,
             recorder: None,
@@ -194,6 +197,12 @@ impl Processor {
         if self.verifier.has_verified() {
             self.similarity_available_ms =
                 self.similarity_available_ms.saturating_add(self.frame_ms);
+            // Update last verification result.
+            if let Some(sim) = ver_result.as_ref().map(|r| r.similarity) {
+                let cfg_r = self.config.read();
+                self.last_verified_as_owner = Some(sim >= cfg_r.speaker.similarity_threshold);
+                drop(cfg_r);
+            }
         }
         let cfg = self.config.read();
         let gate_input = GateInput {
@@ -206,6 +215,7 @@ impl Processor {
             hold_time_ms: cfg.gate.hold_time_ms,
             silence_ms: self.silence_ms,
             similarity_available_ms: self.similarity_available_ms,
+            last_verified_as_owner: self.last_verified_as_owner,
         };
         let decision = cfg.gate.mode.evaluate(&gate_input);
         drop(cfg);
