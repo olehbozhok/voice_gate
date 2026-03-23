@@ -20,9 +20,27 @@ Write code as a highly qualified senior engineer with years of experience. Every
 
 ## Project Structure
 
-- `src/inference.rs` — ONNX runtime abstraction. Only file that imports tract. To swap runtimes, change only this file.
-- `src/vad/` — voice activity detection.
-- `src/speaker/` — speaker embedding, enrollment, profiles.
-- `src/pipeline/` — audio processing pipeline and gate state machine.
-- `src/audio/` — audio I/O via cpal.
-- `src/ui/` — egui views.
+- `src/inference.rs` — ONNX runtime abstraction. Only file that imports `ort`. To swap runtimes, change only this file.
+- `src/vad/silero.rs` — Silero VAD v5: 512-sample frames + 64-sample context, LSTM state carry.
+- `src/speaker/embedding.rs` — ECAPA-TDNN: raw audio → mel-spectrogram (`mel.rs`) → 192-dim embedding.
+- `src/speaker/profile.rs` — `VoiceProfile` (centroid + metadata), `ProfileStore` (multiple profiles, JSON in `%APPDATA%/voice-gate/profiles/`).
+- `src/speaker/enrollment.rs` — `EnrollmentSession`: accumulates voiced segments, extracts embeddings from sliding windows, averages into centroid.
+- `src/pipeline/processor.rs` — main audio loop. VAD every frame, feeds verifier, evaluates `GateMode`, manages pre-buffer and enrollment.
+- `src/pipeline/verifier.rs` — `SpeakerVerifier`: background thread, computes embeddings, compares against `Arc<RwLock<ProfileStore>>` (live updates).
+- `src/pipeline/recorder.rs` — `TestRecorder`: writes original + gated WAV files.
+- `src/config.rs` — all config structs + `GateMode` enum with `evaluate()`. Shared via `Arc<RwLock<Config>>`.
+- `src/audio/capture.rs` — cpal input: captures at device native rate, sends both original and 16kHz mono downsampled.
+- `src/audio/output.rs` — cpal output: plays native audio directly (no resampling).
+- `src/audio/resampler.rs` — linear interpolation resampler.
+- `src/app.rs` — `VoiceGateApp`: eframe app, owns shared state, background model loading, pipeline lifecycle.
+- `src/ui/main_view.rs` — Dashboard: gate status, start/stop, input level, details with colored telemetry.
+- `src/ui/settings_view.rs` — Settings: thresholds, gate mode, hold time, pre-buffer, device selection.
+- `src/ui/enrollment_view.rs` — Enrollment: record voice, manage multiple profiles (rename, delete).
+
+## Architecture Notes
+
+- **Audio path**: capture sends original quality + 16kHz downsampled. Pipeline runs ML on 16kHz. Gate passes original audio to output — no double-resampling.
+- **GateMode**: `Optimistic` (open first, verify later), `Strict` (verify first), `VadOnly` (no speaker verification). Each mode's `evaluate()` is a pure function — all state in `GateInput`, trivial to test.
+- **Shared state**: `Config`, `ProfileStore`, `PipelineTelemetry` via `Arc<RwLock<T>>`. Settings apply instantly, no restart needed.
+- **Threading**: UI thread (egui), processor thread (VAD + gate), verifier thread (ECAPA-TDNN), model loading thread.
+- **Models**: downloaded on first launch to `%APPDATA%/voice-gate/models/`. Silero VAD (~2.3MB), ECAPA-TDNN (~24.9MB).
