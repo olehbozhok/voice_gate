@@ -7,10 +7,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 use anyhow::Context;
-use crossbeam_channel::{bounded, Sender};
 use cpal::traits::DeviceTrait;
+use crossbeam_channel::{bounded, Sender};
 use parking_lot::RwLock;
 
+use crate::audio::AudioFrame;
 use crate::config::Config;
 use crate::models::{self, DownloadProgress, ModelStatus};
 use crate::pipeline::processor::{EnrollmentCommand, PipelineTelemetry, Processor};
@@ -20,7 +21,6 @@ use crate::speaker::profile::ProfileStore;
 use crate::ui::enrollment_view::EnrollmentViewState;
 use crate::ui::model_setup_view::ModelSetupAction;
 use crate::ui::ActiveView;
-use crate::audio::AudioFrame;
 use crate::vad::silero::SileroVad;
 
 #[derive(Clone, Copy)]
@@ -63,6 +63,7 @@ pub struct VoiceGateApp {
     last_error: Option<String>,
     recording_flag: Arc<AtomicBool>,
     device_cache: crate::ui::settings_view::DeviceListCache,
+    settings_view_state: crate::ui::settings_view::SettingsViewState,
     enrollment_view_state: EnrollmentViewState,
     /// Receives loaded models from background thread.
     models_rx: Option<crossbeam_channel::Receiver<Result<LoadedModels, String>>>,
@@ -78,6 +79,7 @@ impl VoiceGateApp {
         let config = Config::load(&config_path);
         let profile_store = ProfileStore::load(&config.profiles_dir);
         let model_status = models::check_models(&config.models_dir);
+        let settings_view_state = crate::ui::settings_view::SettingsViewState::from_config(&config);
 
         Self {
             config: Arc::new(RwLock::new(config)),
@@ -89,6 +91,7 @@ impl VoiceGateApp {
             last_error: None,
             recording_flag: Arc::new(AtomicBool::new(false)),
             device_cache: crate::ui::settings_view::DeviceListCache::new(),
+            settings_view_state,
             enrollment_view_state: EnrollmentViewState::default(),
             models_rx: None,
             model_status,
@@ -470,8 +473,13 @@ impl eframe::App for VoiceGateApp {
             }
             ActiveView::Settings => {
                 let mut cfg = self.config.write();
-                let result =
-                    crate::ui::settings_view::show(ui, &mut cfg, &self.device_cache, ctx);
+                let result = crate::ui::settings_view::show(
+                    ui,
+                    &mut cfg,
+                    &self.device_cache,
+                    ctx,
+                    &mut self.settings_view_state,
+                );
                 if result.changed {
                     let _ = cfg.save(&self.config_path);
                 }

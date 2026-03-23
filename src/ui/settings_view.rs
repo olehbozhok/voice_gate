@@ -91,15 +91,37 @@ pub struct SettingsResult {
     pub device_changed: bool,
 }
 
+/// Persistent UI state for settings that must survive mode switches.
+pub struct SettingsViewState {
+    /// Preserved OptimisticConfig so switching away and back doesn't lose values.
+    pub optimistic_cfg: OptimisticConfig,
+}
+
+impl SettingsViewState {
+    pub fn from_config(config: &Config) -> Self {
+        let optimistic_cfg = match config.gate.mode {
+            GateMode::Optimistic(cfg) => cfg,
+            _ => OptimisticConfig::default(),
+        };
+        Self { optimistic_cfg }
+    }
+}
+
 /// Returns what changed in settings.
 pub fn show(
     ui: &mut Ui,
     config: &mut Config,
     devices: &DeviceListCache,
     ctx: &egui::Context,
+    state: &mut SettingsViewState,
 ) -> SettingsResult {
     let mut changed = false;
     let mut device_changed = false;
+
+    // Sync: if currently Optimistic, keep state in sync with config.
+    if let GateMode::Optimistic(cfg) = config.gate.mode {
+        state.optimistic_cfg = cfg;
+    }
     ui.heading("Settings");
     ui.add_space(8.0);
 
@@ -167,7 +189,7 @@ pub fn show(
             ui.label("Verification mode:");
             let is_optimistic = matches!(config.gate.mode, GateMode::Optimistic(_));
             if ui.selectable_label(is_optimistic, "Optimistic").clicked() && !is_optimistic {
-                config.gate.mode = GateMode::Optimistic(OptimisticConfig::default());
+                config.gate.mode = GateMode::Optimistic(state.optimistic_cfg);
                 changed = true;
             }
             if ui.selectable_label(config.gate.mode == GateMode::Strict, "Strict").clicked() {
