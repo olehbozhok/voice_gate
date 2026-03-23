@@ -2,7 +2,9 @@
 
 use crate::vad::VadResult;
 
-const MIN_SEGMENT_SECS: f32 = 1.5;
+/// Minimum speech segment duration to keep. Shorter segments
+/// (coughs, breaths, single words) are discarded as noise.
+const MIN_SEGMENT_SECS: f32 = 0.35;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum EnrollmentState {
@@ -58,7 +60,7 @@ impl EnrollmentSession {
             self.current_segment.clear();
             self.prev_was_speech = false;
         }
-        let speech_seconds = self.speech_buffer.len() as f32 / self.sample_rate as f32;
+        let speech_seconds = self.speech_seconds();
         self.state = EnrollmentState::Recording { speech_seconds };
     }
 
